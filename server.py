@@ -1,4 +1,4 @@
-"""Minimal Flask API server that wraps the design pipeline for the frontend."""
+"""Design ~ Storm API server — streams the design pipeline to the frontend via SSE."""
 
 import json
 import os
@@ -12,11 +12,15 @@ load_dotenv()
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 
+import weave
+
 from audience import generate_testers
 from prompts import generate_designer_prompts_v2
 from fal_image import generate_image
 from critique import critique_candidates
 from refine import refine_prompts_v2
+
+weave.init(project_name=os.environ.get("WANDB_PROJECT", "design-self-improve"))
 
 app = Flask(__name__)
 CORS(app)

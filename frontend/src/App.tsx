@@ -816,7 +816,7 @@ function App() {
     <div className={`app ${started ? "is-running" : "is-landing"}`}>
       {/* -------- header / input -------- */}
       <header className="header">
-        <h1 className="title">Design Pipeline</h1>
+        <h1 className="title">Design ~ Storm</h1>
         <div className="input-row">
           <textarea
             className="prompt-input"
