@@ -1,17 +1,18 @@
-"""Vibe skill entrypoint – wraps the existing pipeline."""
+"""Vibe skill entrypoint – runs a single generation round."""
 
 import os
 import sys
+import time
 
-# Ensure the project root is on the import path so we can reuse the pipeline.
+# Ensure the project root is on the import path.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-from main import run_pipeline  # noqa: E402
+import weave  # noqa: E402
+from generate import generate_round  # noqa: E402
 
 
 def run():
-    # Vibe passes the user prompt as a CLI argument.
     if len(sys.argv) < 2:
         print("Error: No prompt provided.")
         print('Usage: /design3 "your design prompt here"')
@@ -19,13 +20,14 @@ def run():
 
     user_prompt = sys.argv[1]
 
-    # Validate required env vars early.
     missing = [v for v in ("GEMINI_API_KEY", "WANDB_API_KEY") if not os.environ.get(v)]
     if missing:
         print(f"Error: Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
 
-    run_pipeline(user_prompt)
+    weave.init(project_name=os.environ.get("WANDB_PROJECT", "design-self-improve"))
+    session_id = str(int(time.time()))
+    generate_round(user_prompt, session_id, round_num=1)
 
 
 if __name__ == "__main__":

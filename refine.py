@@ -1,16 +1,16 @@
 """Refine designer prompts based on critique feedback, audience, and style assignments."""
 
+import argparse
 import json
 import os
-import random
-import time
+from pathlib import Path
 
-import httpx
+from dotenv import load_dotenv
+load_dotenv()
 
-GEMINI_TEXT_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
-)
+import weave  # noqa: E402
+
+from gemini_client import get_client, TEXT_MODEL  # noqa: E402
 
 SYSTEM_INSTRUCTION_V2 = """\
 You are a world-class UI/UX design director iterating on a design.
@@ -43,45 +43,32 @@ You are a world-class UI/UX design director iterating on a design.
 You are given:
 - The original user request
 - The 3 designer prompts from the previous round
-- A critique with scores, a winner, and improvement suggestions
+- Evaluation results with scores, reasoning, and improvement suggestions
 
 Your job: produce 3 NEW designer prompts that improve on the previous round.
 - Keep what worked well (especially from the winning candidate).
 - Address the specific improvement suggestions from the critique.
 - Maintain 3 distinct aesthetic styles.
 - Each prompt should be more specific and refined than the previous round.
-
-Return ONLY a JSON array of 3 strings, no markdown, no explanation.
 """
 
-
-def _get_gemini_api_key() -> str:
-    return os.environ.get("GEMINI_API_KEY", "").strip()
-
-
-def _post_with_retry(url: str, *, params: dict, json_body: dict, timeout: int) -> httpx.Response:
-    last_exc: Exception | None = None
-    for attempt in range(1, 6):
-        try:
-            resp = httpx.post(url, params=params, json=json_body, timeout=timeout)
-            if resp.status_code in (429, 500, 502, 503, 504):
-                wait_s = min(30.0, (2 ** (attempt - 1))) + random.random()
-                print(f"    ↻ Gemini {resp.status_code}, retrying in {wait_s:.1f}s (attempt {attempt}/5)")
-                time.sleep(wait_s)
-                continue
-            resp.raise_for_status()
-            return resp
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
-            last_exc = e
-            if attempt >= 5:
-                break
-            wait_s = min(30.0, (2 ** (attempt - 1))) + random.random()
-            time.sleep(wait_s)
-
-    raise RuntimeError(
-        "Gemini refine request failed after retries (possible rate limit / quota). "
-        "Try again in a minute, or check your Google AI Studio quota."
-    ) from last_exc
+REFINE_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "refined_prompts",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "minimal_swiss": {"type": "string"},
+                "editorial_magazine": {"type": "string"},
+                "playful_illustrative": {"type": "string"},
+            },
+            "required": ["minimal_swiss", "editorial_magazine", "playful_illustrative"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 def refine_prompts_v2(
@@ -96,10 +83,6 @@ def refine_prompts_v2(
     Returns:
         {"style_assignments": [...], "prompts": ["...", "...", "..."]}
     """
-    api_key = _get_gemini_api_key()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
-
     # Build context
     tester_summary = ""
     for i, t in enumerate(testers["testers"], 1):
@@ -120,24 +103,19 @@ def refine_prompts_v2(
     context += f"\nTester personas:{tester_summary}\n"
     context += f"Critique:\n{json.dumps(critique, indent=2)}\n"
 
-    payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION_V2}]},
-        "contents": [{"parts": [{"text": context}]}],
-        "generationConfig": {
-            "temperature": 0.8,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    resp = _post_with_retry(
-        GEMINI_TEXT_URL,
-        params={"key": api_key},
-        json_body=payload,
-        timeout=60,
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=TEXT_MODEL,
+        temperature=0.8,
+        max_tokens=4000,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": SYSTEM_INSTRUCTION_V2},
+            {"role": "user", "content": context},
+        ],
     )
 
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    data = json.loads(text)
+    data = json.loads(resp.choices[0].message.content)
 
     if not isinstance(data, dict) or "prompts" not in data:
         raise ValueError(f"Expected JSON object with 'prompts', got: {json.dumps(data)[:300]}")
@@ -152,44 +130,66 @@ def refine_prompts_v2(
 
 # ---------- Backward-compatible legacy refine --------------------------------
 
+@weave.op()
 def refine_prompts(
     user_prompt: str,
     previous_prompts: list[str],
-    critique: dict,
+    eval_feedback: dict,
 ) -> list[str]:
     """Legacy: Generate 3 improved designer prompts (no audience/style context)."""
-    api_key = _get_gemini_api_key()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
-
     context = (
         f"Original user request: {user_prompt}\n\n"
         f"Previous designer prompts:\n"
     )
     for i, p in enumerate(previous_prompts, 1):
         context += f"  {i}. {p}\n"
-    context += f"\nCritique:\n{json.dumps(critique, indent=2)}\n"
+    context += f"\nEvaluation results:\n{json.dumps(eval_feedback, indent=2)}\n"
 
-    payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION_LEGACY}]},
-        "contents": [{"parts": [{"text": context}]}],
-        "generationConfig": {
-            "temperature": 0.8,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    resp = _post_with_retry(
-        GEMINI_TEXT_URL,
-        params={"key": api_key},
-        json_body=payload,
-        timeout=60,
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=TEXT_MODEL,
+        temperature=0.8,
+        max_tokens=2000,
+        response_format=REFINE_SCHEMA,
+        messages=[
+            {"role": "system", "content": SYSTEM_INSTRUCTION_LEGACY},
+            {"role": "user", "content": context},
+        ],
     )
 
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    prompts = json.loads(text)
-
-    if not isinstance(prompts, list) or len(prompts) != 3:
-        raise ValueError(f"Expected 3 prompts, got: {prompts}")
+    data = json.loads(resp.choices[0].message.content)
+    prompts = [data["minimal_swiss"], data["editorial_magazine"], data["playful_illustrative"]]
 
     return [str(p) for p in prompts]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Refine prompts based on evaluation")
+    parser.add_argument("prompt", help="Original user design prompt")
+    parser.add_argument("--session", required=True, help="Session ID")
+    parser.add_argument("--round", type=int, required=True, help="Round to refine from")
+    args = parser.parse_args()
+
+    weave.init(project_name=os.environ.get("WANDB_PROJECT", "design-self-improve"))
+
+    round_dir = Path(f"runs/session_{args.session}/round_{args.round}")
+    eval_path = round_dir / "eval_results.json"
+    manifest_path = round_dir / "manifest.json"
+
+    eval_results = json.loads(eval_path.read_text())
+    manifest = json.loads(manifest_path.read_text())
+
+    print(f"\n▸ Refining prompts from round {args.round}\n")
+    new_prompts = refine_prompts(args.prompt, manifest["designer_prompts"], eval_results)
+
+    # Save refined prompts for next round's generate.py
+    out_path = round_dir / "refined_prompts.json"
+    out_path.write_text(json.dumps(new_prompts, indent=2))
+
+    for i, p in enumerate(new_prompts, 1):
+        print(f"  {i}. {p[:120]}{'…' if len(p) > 120 else ''}")
+    print(f"\n  ✓ Saved refined prompts → {out_path}")
+
+
+if __name__ == "__main__":
+    main()

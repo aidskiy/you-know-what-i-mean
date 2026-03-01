@@ -1,16 +1,8 @@
 """Pass 1: Generate 3 tester personas with 6D audience vectors and critique system instructions."""
 
 import json
-import os
-import random
-import time
 
-import httpx
-
-GEMINI_TEXT_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
-)
+from gemini_client import get_client, TEXT_MODEL
 
 SYSTEM_INSTRUCTION = """\
 You are a user-research strategist.
@@ -63,35 +55,6 @@ VALID_VECTORS = {
 }
 
 
-def _get_gemini_api_key() -> str:
-    return os.environ.get("GEMINI_API_KEY", "").strip()
-
-
-def _post_with_retry(url: str, *, params: dict, json_body: dict, timeout: int) -> httpx.Response:
-    last_exc: Exception | None = None
-    for attempt in range(1, 6):
-        try:
-            resp = httpx.post(url, params=params, json=json_body, timeout=timeout)
-            if resp.status_code in (429, 500, 502, 503, 504):
-                wait_s = min(30.0, (2 ** (attempt - 1))) + random.random()
-                print(f"    ↻ Gemini {resp.status_code}, retrying in {wait_s:.1f}s (attempt {attempt}/5)")
-                time.sleep(wait_s)
-                continue
-            resp.raise_for_status()
-            return resp
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
-            last_exc = e
-            if attempt >= 5:
-                break
-            wait_s = min(30.0, (2 ** (attempt - 1))) + random.random()
-            time.sleep(wait_s)
-
-    raise RuntimeError(
-        "Gemini audience request failed after retries (possible rate limit / quota). "
-        "Try again in a minute, or check your Google AI Studio quota."
-    ) from last_exc
-
-
 def _validate_vector(vector: dict) -> bool:
     """Return True if all 6D fields are present and have valid values."""
     for field, allowed in VALID_VECTORS.items():
@@ -131,28 +94,19 @@ def generate_testers(user_prompt: str) -> dict:
             ]
         }
     """
-    api_key = _get_gemini_api_key()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
-
-    payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
-        "contents": [{"parts": [{"text": user_prompt}]}],
-        "generationConfig": {
-            "temperature": 1.0,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    resp = _post_with_retry(
-        GEMINI_TEXT_URL,
-        params={"key": api_key},
-        json_body=payload,
-        timeout=60,
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=TEXT_MODEL,
+        temperature=1.0,
+        max_tokens=3000,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": SYSTEM_INSTRUCTION},
+            {"role": "user", "content": user_prompt},
+        ],
     )
 
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    data = json.loads(text)
+    data = json.loads(resp.choices[0].message.content)
 
     if not isinstance(data, dict) or "testers" not in data:
         raise ValueError(f"Expected {{'testers': [...]}} , got: {json.dumps(data)[:300]}")

@@ -218,6 +218,13 @@
   font-size: 0.8rem;
 }
 
+.status-msg {
+  margin: 8px 0 0;
+  color: #6E665E;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
 .loader-bar {
   margin-top: 10px;
   height: 3px;

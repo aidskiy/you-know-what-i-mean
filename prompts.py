@@ -1,16 +1,10 @@
 """Pass 2: Select 3 design styles from taxonomy and generate audience-aligned prompts."""
 
 import json
-import os
-import random
-import time
 
-import httpx
+import weave
 
-GEMINI_TEXT_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
-)
+from gemini_client import get_client, TEXT_MODEL
 
 DESIGN_STYLES = [
     "Minimalist/Flat",
@@ -34,8 +28,8 @@ You are given:
 - A design style taxonomy (10 styles).
 
 Primary objective:
-Create 3 candidate single-screen designs that make the app’s purpose obvious to a first-time user
-who has ZERO prior context. The screen must “explain itself” visually and textually.
+Create 3 candidate single-screen designs that make the app's purpose obvious to a first-time user
+who has ZERO prior context. The screen must "explain itself" visually and textually.
 
 Hard constraints (must follow):
 1) The screen MUST communicate:
@@ -46,11 +40,11 @@ Hard constraints (must follow):
 2) The screen MUST include clarity scaffolding:
    - A clear title (what it is)
    - A one-line value proposition (why it matters)
-   - A primary CTA with specific verb + object (not generic “Continue”)
+   - A primary CTA with specific verb + object (not generic "Continue")
    - At least 2 concrete UI clues (e.g., example card, preview, sample metric, sample plan, sample chat)
 3) Avoid ambiguity words and generic labels:
    - long paragraphs and explanations, shoudl be concise and to the point
-   - Do NOT use vague CTAs like “Get started”, “Next”, “Continue” unless paired with specificity.
+   - Do NOT use vague CTAs like "Get started", "Next", "Continue" unless paired with specificity.
    - Do NOT rely on icons alone to explain meaning.
 
 4) Keep to a SINGLE screen. It can be an onboarding/landing screen OR a home/dashboard screen, but not multiple screens.
@@ -69,7 +63,7 @@ Your job:
    - The exact headline text (title)
    - The exact subheadline text (value prop)
    - The exact primary CTA label text
-   - 2–4 example UI elements that concretely reveal the app’s function (with example copy)
+   - 2–4 example UI elements that concretely reveal the app's function (with example copy)
    - Layout structure (sections, hierarchy)
    - Typography, colors, spacing, and style-specific rendering cues
 
@@ -104,35 +98,6 @@ The prompts must be ready for AI image generation and should read like a high-fi
 """
 
 
-def _get_gemini_api_key() -> str:
-    return os.environ.get("GEMINI_API_KEY", "").strip()
-
-
-def _post_with_retry(url: str, *, params: dict, json_body: dict, timeout: int) -> httpx.Response:
-    last_exc: Exception | None = None
-    for attempt in range(1, 6):
-        try:
-            resp = httpx.post(url, params=params, json=json_body, timeout=timeout)
-            if resp.status_code in (429, 500, 502, 503, 504):
-                wait_s = min(30.0, (2 ** (attempt - 1))) + random.random()
-                print(f"    ↻ Gemini {resp.status_code}, retrying in {wait_s:.1f}s (attempt {attempt}/5)")
-                time.sleep(wait_s)
-                continue
-            resp.raise_for_status()
-            return resp
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
-            last_exc = e
-            if attempt >= 5:
-                break
-            wait_s = min(30.0, (2 ** (attempt - 1))) + random.random()
-            time.sleep(wait_s)
-
-    raise RuntimeError(
-        "Gemini request failed after retries (possible rate limit / quota). "
-        "Try again in a minute, or check your Google AI Studio quota."
-    ) from last_exc
-
-
 def generate_designer_prompts_v2(user_prompt: str, testers: dict) -> dict:
     """Pass 2: Use tester personas + audience vectors to select 3 styles and generate prompts.
 
@@ -146,10 +111,6 @@ def generate_designer_prompts_v2(user_prompt: str, testers: dict) -> dict:
             "prompts": ["...", "...", "..."],
         }
     """
-    api_key = _get_gemini_api_key()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
-
     # Build context with testers and taxonomy
     tester_summary = ""
     for i, t in enumerate(testers["testers"], 1):
@@ -163,24 +124,23 @@ def generate_designer_prompts_v2(user_prompt: str, testers: dict) -> dict:
         + "\n".join(f"  {i+1}. {s}" for i, s in enumerate(DESIGN_STYLES))
     )
 
-    payload = {
-        "system_instruction": {"parts": [{"text": PASS2_SYSTEM_INSTRUCTION}]},
-        "contents": [{"parts": [{"text": context}]}],
-        "generationConfig": {
-            "temperature": 0.9,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    resp = _post_with_retry(
-        GEMINI_TEXT_URL,
-        params={"key": api_key},
-        json_body=payload,
-        timeout=60,
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=TEXT_MODEL,
+        temperature=0.9,
+        max_tokens=8000,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": PASS2_SYSTEM_INSTRUCTION},
+            {"role": "user", "content": context},
+        ],
     )
 
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    data = json.loads(text)
+    # Check for truncation
+    if resp.choices[0].finish_reason == "length":
+        raise RuntimeError("Response was truncated (hit max_tokens). Retrying may help.")
+
+    data = json.loads(resp.choices[0].message.content)
 
     # Validate
     if not isinstance(data, dict):
@@ -203,41 +163,47 @@ def generate_designer_prompts_v2(user_prompt: str, testers: dict) -> dict:
 
 # ---------- Backward-compatible v1 (kept for --rounds 1 single-shot) ---------
 
-def generate_designer_prompts(user_prompt: str) -> list[str]:
-    """Legacy: generate 3 prompts without audience context (calls v2 internally would
-    need testers, so this falls back to a simple single-call approach)."""
-    api_key = _get_gemini_api_key()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
+SIMPLE_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "designer_prompts",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "minimal_swiss": {"type": "string"},
+                "editorial_magazine": {"type": "string"},
+                "playful_illustrative": {"type": "string"},
+            },
+            "required": ["minimal_swiss", "editorial_magazine", "playful_illustrative"],
+            "additionalProperties": False,
+        },
+    },
+}
 
+
+@weave.op()
+def generate_designer_prompts(user_prompt: str) -> list[str]:
+    """Legacy: generate 3 prompts without audience context."""
     fallback_instruction = (
         "You are a world-class UI/UX design director.\n"
         "Given a product idea, produce exactly 3 distinct image-generation prompts, "
         "each in a different visual style chosen from: "
-        + ", ".join(DESIGN_STYLES) + ".\n\n"
-        "Return ONLY a JSON array of 3 strings, no markdown."
+        + ", ".join(DESIGN_STYLES) + ".\n"
     )
 
-    payload = {
-        "system_instruction": {"parts": [{"text": fallback_instruction}]},
-        "contents": [{"parts": [{"text": user_prompt}]}],
-        "generationConfig": {
-            "temperature": 1.0,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    resp = _post_with_retry(
-        GEMINI_TEXT_URL,
-        params={"key": api_key},
-        json_body=payload,
-        timeout=60,
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=TEXT_MODEL,
+        temperature=1.0,
+        max_tokens=2000,
+        response_format=SIMPLE_SCHEMA,
+        messages=[
+            {"role": "system", "content": fallback_instruction},
+            {"role": "user", "content": user_prompt},
+        ],
     )
 
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    prompts = json.loads(text)
-
-    if not isinstance(prompts, list) or len(prompts) != 3:
-        raise ValueError(f"Expected 3 prompts, got: {prompts}")
-
+    data = json.loads(resp.choices[0].message.content)
+    prompts = [data["minimal_swiss"], data["editorial_magazine"], data["playful_illustrative"]]
     return [str(p) for p in prompts]

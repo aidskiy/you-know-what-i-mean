@@ -2,86 +2,45 @@
 
 import base64
 import json
-import os
-import random
-import time
 from pathlib import Path
 
-import httpx
-
-GEMINI_TEXT_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
-)
+from gemini_client import get_client, TEXT_MODEL
 
 
-def _get_gemini_api_key() -> str:
-    return os.environ.get("GEMINI_API_KEY", "").strip()
-
-
-def _post_with_retry(url: str, *, params: dict, json_body: dict, timeout: int) -> httpx.Response:
-    last_exc: Exception | None = None
-    for attempt in range(1, 6):
-        try:
-            resp = httpx.post(url, params=params, json=json_body, timeout=timeout)
-            if resp.status_code in (429, 500, 502, 503, 504):
-                wait_s = min(30.0, (2 ** (attempt - 1))) + random.random()
-                print(f"    ↻ Gemini {resp.status_code}, retrying in {wait_s:.1f}s (attempt {attempt}/5)")
-                time.sleep(wait_s)
-                continue
-            resp.raise_for_status()
-            return resp
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
-            last_exc = e
-            if attempt >= 5:
-                break
-            wait_s = min(30.0, (2 ** (attempt - 1))) + random.random()
-            time.sleep(wait_s)
-
-    raise RuntimeError(
-        "Gemini critique request failed after retries (possible rate limit / quota). "
-        "Try again in a minute, or check your Google AI Studio quota."
-    ) from last_exc
+def _image_url(image_path: Path) -> str:
+    """Build a data URL from an image file for OpenAI vision."""
+    img_bytes = image_path.read_bytes()
+    b64 = base64.b64encode(img_bytes).decode()
+    return f"data:image/png;base64,{b64}"
 
 
 def _run_tester_review(
     *,
-    api_key: str,
     system_instruction: str,
     image_paths: list[Path],
 ) -> dict:
     """Run one tester's multimodal review of all candidates."""
-    parts: list[dict] = []
+    content: list[dict] = []
     for i, img_path in enumerate(image_paths, 1):
-        parts.append({"text": f"--- Candidate {i} ---\nDesign screenshot:"})
-        img_bytes = img_path.read_bytes()
-        parts.append(
-            {
-                "inlineData": {
-                    "mimeType": "image/png",
-                    "data": base64.b64encode(img_bytes).decode(),
-                }
-            }
-        )
+        content.append({"type": "text", "text": f"--- Candidate {i} ---\nDesign screenshot:"})
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": _image_url(img_path)},
+        })
 
-    payload = {
-        "system_instruction": {"parts": [{"text": system_instruction}]},
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    resp = _post_with_retry(
-        GEMINI_TEXT_URL,
-        params={"key": api_key},
-        json_body=payload,
-        timeout=90,
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=TEXT_MODEL,
+        temperature=0.3,
+        max_tokens=3000,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": content},
+        ],
     )
 
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    review = json.loads(text)
+    review = json.loads(resp.choices[0].message.content)
 
     if not isinstance(review, dict) or "candidates" not in review:
         raise ValueError(f"Invalid tester review response: {review}")
@@ -141,7 +100,7 @@ def critique_candidates(
     image_paths: list[Path],
     tester_system_instructions: list[str] | None = None,
 ) -> dict:
-    """Send all 3 candidates to Gemini for critique.
+    """Send all 3 candidates to OpenAI for critique.
 
     Args:
         user_prompt: Original user prompt (not leaked to testers).
@@ -150,10 +109,6 @@ def critique_candidates(
         tester_system_instructions: 3 system instruction strings from Pass 1.
             If None, uses a generic fallback (backward compat).
     """
-    api_key = _get_gemini_api_key()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
-
     # Fallback if no dynamic testers provided
     if tester_system_instructions is None:
         tester_system_instructions = [
@@ -186,7 +141,7 @@ def critique_candidates(
     tester_reviews = []
     for i, sysinstruct in enumerate(tester_system_instructions, 1):
         print(f"    Tester {i} reviewing …")
-        review = _run_tester_review(api_key=api_key, system_instruction=sysinstruct, image_paths=image_paths)
+        review = _run_tester_review(system_instruction=sysinstruct, image_paths=image_paths)
         tester_reviews.append(review)
 
     critique = _aggregate_tester_reviews(tester_reviews)
