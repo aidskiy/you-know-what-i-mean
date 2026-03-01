@@ -1,4 +1,4 @@
-"""Refine designer prompts based on evaluation feedback."""
+"""Refine designer prompts based on critique feedback, audience, and style assignments."""
 
 import argparse
 import json
@@ -12,7 +12,33 @@ import weave  # noqa: E402
 
 from gemini_client import get_client, TEXT_MODEL  # noqa: E402
 
-SYSTEM_INSTRUCTION = """\
+SYSTEM_INSTRUCTION_V2 = """\
+You are a world-class UI/UX design director iterating on a design.
+You are given:
+- The original user request
+- The 3 designer prompts from the previous round, each assigned a design style
+- 3 tester personas with 6D audience vectors
+- A critique with scores, a winner, and improvement suggestions from those testers
+
+Your job: produce 3 NEW designer prompts that improve on the previous round.
+- Keep what worked well (especially from the winning candidate).
+- Address the specific improvement suggestions from the critique.
+- Each prompt MUST keep its assigned design style from the taxonomy.
+- Tailor each prompt to better match the audience expectations (based on the tester vectors).
+- Each prompt should be more specific and refined than the previous round.
+
+Return ONLY a JSON object, no markdown:
+{
+  "style_assignments": [
+    {"candidate": 1, "style": "<same style as before>"},
+    {"candidate": 2, "style": "<same style as before>"},
+    {"candidate": 3, "style": "<same style as before>"}
+  ],
+  "prompts": ["<improved prompt 1>", "<improved prompt 2>", "<improved prompt 3>"]
+}
+"""
+
+SYSTEM_INSTRUCTION_LEGACY = """\
 You are a world-class UI/UX design director iterating on a design.
 You are given:
 - The original user request
@@ -20,11 +46,10 @@ You are given:
 - Evaluation results with scores, reasoning, and improvement suggestions
 
 Your job: produce 3 NEW designer prompts that improve on the previous round.
-- Keep what worked well (especially from the highest-scoring candidate).
-- Address the specific improvement suggestions from the evaluation.
-- Maintain the 3 distinct aesthetic styles (Minimal/Swiss, Editorial/Magazine, Playful/Illustrative).
+- Keep what worked well (especially from the winning candidate).
+- Address the specific improvement suggestions from the critique.
+- Maintain 3 distinct aesthetic styles.
 - Each prompt should be more specific and refined than the previous round.
-
 """
 
 REFINE_SCHEMA = {
@@ -46,13 +71,72 @@ REFINE_SCHEMA = {
 }
 
 
+def refine_prompts_v2(
+    user_prompt: str,
+    previous_prompts: list[str],
+    style_assignments: list[dict],
+    testers: dict,
+    critique: dict,
+) -> dict:
+    """Generate 3 improved designer prompts using critique, audience, and style context.
+
+    Returns:
+        {"style_assignments": [...], "prompts": ["...", "...", "..."]}
+    """
+    # Build context
+    tester_summary = ""
+    for i, t in enumerate(testers["testers"], 1):
+        tester_summary += f"\nTester {i}: {t['name']} – {t['bio']}\n"
+        tester_summary += f"  Vector: {json.dumps(t['vector'])}\n"
+
+    style_summary = ""
+    for sa in style_assignments:
+        style_summary += f"  Candidate {sa['candidate']}: {sa['style']}\n"
+
+    context = (
+        f"Original user request: {user_prompt}\n\n"
+        f"Style assignments:\n{style_summary}\n"
+        f"Previous designer prompts:\n"
+    )
+    for i, p in enumerate(previous_prompts, 1):
+        context += f"  {i}. {p}\n"
+    context += f"\nTester personas:{tester_summary}\n"
+    context += f"Critique:\n{json.dumps(critique, indent=2)}\n"
+
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=TEXT_MODEL,
+        temperature=0.8,
+        max_tokens=4000,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": SYSTEM_INSTRUCTION_V2},
+            {"role": "user", "content": context},
+        ],
+    )
+
+    data = json.loads(resp.choices[0].message.content)
+
+    if not isinstance(data, dict) or "prompts" not in data:
+        raise ValueError(f"Expected JSON object with 'prompts', got: {json.dumps(data)[:300]}")
+    if len(data["prompts"]) != 3:
+        raise ValueError(f"Expected 3 prompts, got {len(data['prompts'])}")
+
+    return {
+        "style_assignments": data.get("style_assignments", style_assignments),
+        "prompts": [str(p).strip() for p in data["prompts"]],
+    }
+
+
+# ---------- Backward-compatible legacy refine --------------------------------
+
 @weave.op()
 def refine_prompts(
     user_prompt: str,
     previous_prompts: list[str],
     eval_feedback: dict,
 ) -> list[str]:
-    """Generate 3 improved designer prompts using evaluation feedback."""
+    """Legacy: Generate 3 improved designer prompts (no audience/style context)."""
     context = (
         f"Original user request: {user_prompt}\n\n"
         f"Previous designer prompts:\n"
@@ -68,7 +152,7 @@ def refine_prompts(
         max_tokens=2000,
         response_format=REFINE_SCHEMA,
         messages=[
-            {"role": "system", "content": SYSTEM_INSTRUCTION},
+            {"role": "system", "content": SYSTEM_INSTRUCTION_LEGACY},
             {"role": "user", "content": context},
         ],
     )
