@@ -2,54 +2,21 @@
 
 import base64
 import json
-import os
 
-import httpx
 import weave
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_TEXT_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
-)
+from gemini_client import get_client, TEXT_MODEL
 
 
-def _image_part(image_path: str) -> dict:
-    """Build a Gemini inlineData part from an image file."""
+def _image_url(image_path: str) -> str:
+    """Build a data URL from an image file for OpenAI vision."""
     img_bytes = open(image_path, "rb").read()
-    return {
-        "inlineData": {
-            "mimeType": "image/png",
-            "data": base64.b64encode(img_bytes).decode(),
-        }
-    }
-
-
-def _call_gemini(parts: list[dict]) -> dict:
-    """Call Gemini text model with multimodal parts, return parsed JSON."""
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
-
-    payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "responseMimeType": "application/json",
-        },
-    }
-    resp = httpx.post(
-        GEMINI_TEXT_URL,
-        params={"key": GEMINI_API_KEY},
-        json=payload,
-        timeout=90,
-    )
-    resp.raise_for_status()
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+    b64 = base64.b64encode(img_bytes).decode()
+    return f"data:image/png;base64,{b64}"
 
 
 class CompositeScorer(weave.Scorer):
-    """Scores a design candidate on fidelity and visual quality via Gemini."""
+    """Scores a design candidate on fidelity and visual quality via OpenAI."""
 
     @weave.op()
     def score(self, output: dict) -> dict:
@@ -64,5 +31,25 @@ class CompositeScorer(weave.Scorer):
             f'{{"fidelity": <float>, "quality": <float>, "overall": <float>, '
             f'"reasoning": "<2 sentences>", "suggestions": "<actionable improvement>"}}'
         )
-        parts = [{"text": prompt_text}, _image_part(output["image_path"])]
-        return _call_gemini(parts)
+
+        client = get_client()
+        resp = client.chat.completions.create(
+            model=TEXT_MODEL,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": _image_url(output["image_path"])},
+                        },
+                    ],
+                }
+            ],
+        )
+
+        text = resp.choices[0].message.content
+        return json.loads(text)

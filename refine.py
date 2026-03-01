@@ -8,14 +8,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-import httpx  # noqa: E402
 import weave  # noqa: E402
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_TEXT_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
-)
+from gemini_client import get_client, TEXT_MODEL  # noqa: E402
 
 SYSTEM_INSTRUCTION = """\
 You are a world-class UI/UX design director iterating on a design.
@@ -30,8 +25,25 @@ Your job: produce 3 NEW designer prompts that improve on the previous round.
 - Maintain the 3 distinct aesthetic styles (Minimal/Swiss, Editorial/Magazine, Playful/Illustrative).
 - Each prompt should be more specific and refined than the previous round.
 
-Return ONLY a JSON array of 3 strings, no markdown, no explanation.
 """
+
+REFINE_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "refined_prompts",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "minimal_swiss": {"type": "string"},
+                "editorial_magazine": {"type": "string"},
+                "playful_illustrative": {"type": "string"},
+            },
+            "required": ["minimal_swiss", "editorial_magazine", "playful_illustrative"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 @weave.op()
@@ -41,9 +53,6 @@ def refine_prompts(
     eval_feedback: dict,
 ) -> list[str]:
     """Generate 3 improved designer prompts using evaluation feedback."""
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
-
     context = (
         f"Original user request: {user_prompt}\n\n"
         f"Previous designer prompts:\n"
@@ -52,28 +61,20 @@ def refine_prompts(
         context += f"  {i}. {p}\n"
     context += f"\nEvaluation results:\n{json.dumps(eval_feedback, indent=2)}\n"
 
-    payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
-        "contents": [{"parts": [{"text": context}]}],
-        "generationConfig": {
-            "temperature": 0.8,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    resp = httpx.post(
-        GEMINI_TEXT_URL,
-        params={"key": GEMINI_API_KEY},
-        json=payload,
-        timeout=60,
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=TEXT_MODEL,
+        temperature=0.8,
+        max_tokens=2000,
+        response_format=REFINE_SCHEMA,
+        messages=[
+            {"role": "system", "content": SYSTEM_INSTRUCTION},
+            {"role": "user", "content": context},
+        ],
     )
-    resp.raise_for_status()
 
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    prompts = json.loads(text)
-
-    if not isinstance(prompts, list) or len(prompts) != 3:
-        raise ValueError(f"Expected 3 prompts, got: {prompts}")
+    data = json.loads(resp.choices[0].message.content)
+    prompts = [data["minimal_swiss"], data["editorial_magazine"], data["playful_illustrative"]]
 
     return [str(p) for p in prompts]
 
