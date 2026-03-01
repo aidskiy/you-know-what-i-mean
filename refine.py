@@ -50,25 +50,11 @@ Your job: produce 3 NEW designer prompts that improve on the previous round.
 - Address the specific improvement suggestions from the critique.
 - Maintain 3 distinct aesthetic styles.
 - Each prompt should be more specific and refined than the previous round.
+
+Return ONLY a JSON object with exactly these three keys:
+{"minimal_swiss": "...", "editorial_magazine": "...", "playful_illustrative": "..."}
 """
 
-REFINE_SCHEMA = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "refined_prompts",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "minimal_swiss": {"type": "string"},
-                "editorial_magazine": {"type": "string"},
-                "playful_illustrative": {"type": "string"},
-            },
-            "required": ["minimal_swiss", "editorial_magazine", "playful_illustrative"],
-            "additionalProperties": False,
-        },
-    },
-}
 
 
 def refine_prompts_v2(
@@ -150,7 +136,7 @@ def refine_prompts(
         model=TEXT_MODEL,
         temperature=0.8,
         max_tokens=2000,
-        response_format=REFINE_SCHEMA,
+        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": SYSTEM_INSTRUCTION_LEGACY},
             {"role": "user", "content": context},

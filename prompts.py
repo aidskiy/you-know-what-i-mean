@@ -163,25 +163,6 @@ def generate_designer_prompts_v2(user_prompt: str, testers: dict) -> dict:
 
 # ---------- Backward-compatible v1 (kept for --rounds 1 single-shot) ---------
 
-SIMPLE_SCHEMA = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "designer_prompts",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "minimal_swiss": {"type": "string"},
-                "editorial_magazine": {"type": "string"},
-                "playful_illustrative": {"type": "string"},
-            },
-            "required": ["minimal_swiss", "editorial_magazine", "playful_illustrative"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-
 @weave.op()
 def generate_designer_prompts(user_prompt: str) -> list[str]:
     """Legacy: generate 3 prompts without audience context."""
@@ -189,7 +170,9 @@ def generate_designer_prompts(user_prompt: str) -> list[str]:
         "You are a world-class UI/UX design director.\n"
         "Given a product idea, produce exactly 3 distinct image-generation prompts, "
         "each in a different visual style chosen from: "
-        + ", ".join(DESIGN_STYLES) + ".\n"
+        + ", ".join(DESIGN_STYLES) + ".\n\n"
+        "Return ONLY a JSON object with exactly these three keys:\n"
+        '{"minimal_swiss": "...", "editorial_magazine": "...", "playful_illustrative": "..."}\n'
     )
 
     client = get_client()
@@ -197,7 +180,7 @@ def generate_designer_prompts(user_prompt: str) -> list[str]:
         model=TEXT_MODEL,
         temperature=1.0,
         max_tokens=2000,
-        response_format=SIMPLE_SCHEMA,
+        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": fallback_instruction},
             {"role": "user", "content": user_prompt},
