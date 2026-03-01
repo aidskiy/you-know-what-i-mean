@@ -128,13 +128,17 @@ def generate_designer_prompts_v2(user_prompt: str, testers: dict) -> dict:
     resp = client.chat.completions.create(
         model=TEXT_MODEL,
         temperature=0.9,
-        max_tokens=4000,
+        max_tokens=8000,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": PASS2_SYSTEM_INSTRUCTION},
             {"role": "user", "content": context},
         ],
     )
+
+    # Check for truncation
+    if resp.choices[0].finish_reason == "length":
+        raise RuntimeError("Response was truncated (hit max_tokens). Retrying may help.")
 
     data = json.loads(resp.choices[0].message.content)
 

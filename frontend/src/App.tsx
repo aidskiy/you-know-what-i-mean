@@ -388,6 +388,7 @@ function App() {
   const [rounds, setRounds] = useState(3);
   const [mockMode, setMockMode] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PipelineResult | null>(null);
   const [selectedImg, setSelectedImg] = useState<{
@@ -412,6 +413,7 @@ function App() {
     if (mockMode) {
       setLoading(false);
       setError(null);
+      setStatusMsg(null);
       setResult(MOCK);
       setSelectedImg(null);
       setReportOpen(false);
@@ -422,6 +424,7 @@ function App() {
 
     setLoading(true);
     setError(null);
+    setStatusMsg("Starting pipeline…");
     setResult(null);
     setSelectedImg(null);
     setReportOpen(false);
@@ -434,18 +437,113 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_prompt: prompt, rounds }),
       });
+
       if (!resp.ok) {
-        if (resp.status === 404) {
-          throw new Error("Failed to fetch");
-        }
+        if (resp.status === 404) throw new Error("Failed to fetch");
         const text = await resp.text();
         throw new Error(`Server ${resp.status}: ${text.slice(0, 300)}`);
       }
-      const data: PipelineResult = await resp.json();
-      setResult(data);
+
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let sessionId = "";
+
+      // Accumulate state incrementally
+      let testers: Tester[] = [];
+      const roundsMap = new Map<number, RoundData>();
+
+      const buildResult = (): PipelineResult => ({
+        session_id: sessionId,
+        user_prompt: prompt,
+        testers,
+        rounds: Array.from(roundsMap.values()).sort((a, b) => a.round - b.round),
+      });
+
+      const ensureRound = (roundNum: number): RoundData => {
+        if (!roundsMap.has(roundNum)) {
+          roundsMap.set(roundNum, {
+            round: roundNum,
+            style_assignments: [],
+            designer_prompts: [],
+            images: [],
+            critique: { winner: 0, scores: [], improvement_suggestions: "", tester_reviews: [] },
+          });
+        }
+        return roundsMap.get(roundNum)!;
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        let eventType = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith("data: ") && eventType) {
+            const data = JSON.parse(line.slice(6));
+
+            switch (eventType) {
+              case "status":
+                setStatusMsg(data.message);
+                break;
+
+              case "testers":
+                sessionId = data.session_id;
+                testers = data.testers;
+                setResult(buildResult());
+                break;
+
+              case "prompts": {
+                const rd = ensureRound(data.round);
+                rd.style_assignments = data.style_assignments;
+                rd.designer_prompts = data.designer_prompts;
+                setResult(buildResult());
+                break;
+              }
+
+              case "image": {
+                const rd = ensureRound(data.round);
+                rd.images.push({ candidate: data.candidate, url: data.url });
+                setResult(buildResult());
+                // Eagerly load the image
+                const key = `${data.round}-${data.candidate}`;
+                const el = new Image();
+                el.crossOrigin = "anonymous";
+                el.src = data.url;
+                el.onload = () =>
+                  setLoadedImages((prev) => new Map(prev).set(key, el));
+                break;
+              }
+
+              case "critique": {
+                const rd = ensureRound(data.round);
+                rd.critique = data.critique;
+                setResult(buildResult());
+                break;
+              }
+
+              case "done":
+                setStatusMsg(null);
+                break;
+
+              case "error":
+                setError(data.message);
+                break;
+            }
+            eventType = "";
+          }
+        }
+      }
     } catch (err: unknown) {
       if (err instanceof Error) {
-        // If the backend isn't running, load mock data for development
         if (
           err.message.includes("Failed to fetch") ||
           err.message.includes("NetworkError")
@@ -460,13 +558,14 @@ function App() {
       }
     } finally {
       setLoading(false);
+      setStatusMsg(null);
     }
   }, [prompt, rounds, mockMode]);
 
-  /* ---------- load images when result arrives ---------- */
+  /* ---------- load images when mock result is set ---------- */
 
   useEffect(() => {
-    if (!result) return;
+    if (!result || !mockMode) return;
     const map = new Map<string, HTMLImageElement>();
     for (const rd of result.rounds) {
       for (const img of rd.images) {
@@ -480,7 +579,7 @@ function App() {
       }
     }
     setLoadedImages(map);
-  }, [result]);
+  }, [result, mockMode]);
 
   /* ---------- redraw canvas ---------- */
 
@@ -562,6 +661,7 @@ function App() {
             <div className="loader-fill" />
           </div>
         )}
+        {statusMsg && <p className="status-msg">{statusMsg}</p>}
       </header>
 
       {/* -------- canvas timeline -------- */}
