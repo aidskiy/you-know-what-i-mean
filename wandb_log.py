@@ -13,7 +13,7 @@ def log_session(
     designer_prompts: list[str],
     image_paths: list[Path],
 ) -> None:
-    """Create a W&B run and log all session data."""
+    """Create a W&B run and log all session data (single-round, backward compat)."""
     project = os.environ.get("WANDB_PROJECT", "design-self-improve")
 
     run = wandb.init(
@@ -65,3 +65,116 @@ def log_session(
     run.log_artifact(artifact)
     run.finish()
     print(f"  ✓ W&B run logged → project={project}  group={session_id}")
+
+
+def log_loop(
+    session_id: str,
+    user_prompt: str,
+    rounds_data: list[dict],
+) -> None:
+    """Log a multi-round self-improving session to W&B.
+
+    rounds_data is a list of dicts, one per round:
+      {
+        "round": int,
+        "designer_prompts": list[str],
+        "image_paths": list[Path],
+        "critique": dict,       # from critique_candidates()
+      }
+    """
+    project = os.environ.get("WANDB_PROJECT", "design-self-improve")
+
+    run = wandb.init(
+        project=project,
+        name=f"loop-{session_id}",
+        group=session_id,
+        config={
+            "user_prompt": user_prompt,
+            "total_rounds": len(rounds_data),
+        },
+    )
+
+    # --- Per-round table with all candidates across rounds -------------------
+    table = wandb.Table(columns=[
+        "round", "candidate_id", "designer_prompt", "image", "score", "reasoning",
+    ])
+
+    for rd in rounds_data:
+        round_num = rd["round"]
+        critique = rd["critique"]
+        scores_by_id = {s["candidate"]: s for s in critique["scores"]}
+
+        for i, (prompt, img_path) in enumerate(
+            zip(rd["designer_prompts"], rd["image_paths"]),
+        ):
+            cid = i + 1
+            score_info = scores_by_id.get(cid, {})
+            table.add_data(
+                round_num,
+                cid,
+                prompt,
+                wandb.Image(str(img_path)),
+                score_info.get("score", 0),
+                score_info.get("reasoning", ""),
+            )
+
+    run.log({"all_candidates": table})
+
+    # --- Score trajectory (line chart) ---------------------------------------
+    for rd in rounds_data:
+        round_num = rd["round"]
+        critique = rd["critique"]
+        best_score = max(s["score"] for s in critique["scores"])
+        avg_score = sum(s["score"] for s in critique["scores"]) / len(critique["scores"])
+        run.log({
+            "round": round_num,
+            "best_score": best_score,
+            "avg_score": avg_score,
+            "winner": critique["winner"],
+        })
+
+    # --- Artifact with all rounds --------------------------------------------
+    artifact = wandb.Artifact(
+        name=f"loop-{session_id}-all-rounds",
+        type="design-loop",
+    )
+
+    for rd in rounds_data:
+        round_num = rd["round"]
+        round_prefix = f"round_{round_num}"
+
+        for i, prompt in enumerate(rd["designer_prompts"]):
+            prompt_path = rd["image_paths"][0].parent / f"designer_prompt_{i+1}.txt"
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
+            prompt_path.write_text(prompt, encoding="utf-8")
+            artifact.add_file(
+                str(prompt_path),
+                name=f"{round_prefix}/prompts/designer_prompt_{i+1}.txt",
+            )
+
+        for i, img_path in enumerate(rd["image_paths"]):
+            artifact.add_file(
+                str(img_path),
+                name=f"{round_prefix}/images/candidate_{i+1}.png",
+            )
+
+        # critique.json per round
+        critique_path = rd["image_paths"][0].parent / "critique.json"
+        critique_path.write_text(json.dumps(rd["critique"], indent=2), encoding="utf-8")
+        artifact.add_file(str(critique_path), name=f"{round_prefix}/critique.json")
+
+    # session_spec.json
+    spec = {
+        "session_id": session_id,
+        "user_prompt": user_prompt,
+        "total_rounds": len(rounds_data),
+        "final_winner": rounds_data[-1]["critique"]["winner"],
+        "final_scores": rounds_data[-1]["critique"]["scores"],
+    }
+    spec_path = rounds_data[0]["image_paths"][0].parent.parent / "session_spec.json"
+    spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    artifact.add_file(str(spec_path), name="session_spec.json")
+
+    run.log_artifact(artifact)
+    run.finish()
+    print(f"  ✓ W&B loop logged → project={project}  group={session_id}")
