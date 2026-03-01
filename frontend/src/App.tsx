@@ -64,9 +64,6 @@ const HEADER_H = 38;
 const PAD_TOP = 24;
 const PAD_LEFT = 32;
 
-const MIN_ZOOM = 0.6;
-const MAX_ZOOM = 2.5;
-
 const MOCK: PipelineResult = {
   session_id: "demo_1709284000",
   user_prompt: "A meditation app for busy professionals",
@@ -176,14 +173,6 @@ const MOCK: PipelineResult = {
 /* ------------------------------------------------------------------ */
 /*  Canvas drawing                                                     */
 /* ------------------------------------------------------------------ */
-
-/** Compute world-space dimensions of the timeline content. */
-function getWorldSize(rounds: RoundData[]) {
-  const cols = rounds.length;
-  const totalW = PAD_LEFT + cols * (CARD_W + COL_GAP);
-  const totalH = PAD_TOP + HEADER_H + 3 * (CARD_H + CARD_GAP) + 40;
-  return { totalW, totalH };
-}
 
 function drawTimeline(
   canvas: HTMLCanvasElement,
@@ -438,6 +427,9 @@ function App() {
   const [loadedImages, setLoadedImages] = useState<
     Map<string, HTMLImageElement>
   >(new Map());
+
+  // Lightbox state
+  const [lightbox, setLightbox] = useState<{ round: number; candidate: number } | null>(null);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [view, setView] = useState<ViewTransform>({
@@ -695,6 +687,10 @@ function App() {
     if (!result) return;
     const hit = hitTestCanvas(e, result.rounds, view);
     setSelectedImg(hit);
+    if (hit) {
+      const key = `${hit.round}-${hit.candidate}`;
+      if (loadedImages.has(key)) setLightbox(hit);
+    }
   };
 
   /* ---------- zoom / pan handlers ---------- */
@@ -781,13 +777,16 @@ function App() {
   const resetView = () => setView({ scale: 1, offsetX: 0, offsetY: 0 });
 
   useEffect(() => {
-    if (!isFullscreen) return;
+    if (!isFullscreen && !lightbox) return;
     const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") setIsFullscreen(false);
+      if (ev.key === "Escape") {
+        if (lightbox) setLightbox(null);
+        else setIsFullscreen(false);
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isFullscreen]);
+  }, [isFullscreen, lightbox]);
 
   /* ---------- derive selection info ---------- */
 
@@ -801,6 +800,13 @@ function App() {
   const selPrompt = selRound?.designer_prompts.find(
     (s) => s.candidate === selectedImg?.candidate
   );
+
+  // Lightbox derivations
+  const lbRound = result?.rounds.find((r) => r.round === lightbox?.round);
+  const lbScore = lbRound?.critique.scores.find((s) => s.candidate === lightbox?.candidate);
+  const lbStyle = lbRound?.style_assignments.find((s) => s.candidate === lightbox?.candidate);
+  const lbImgKey = lightbox ? `${lightbox.round}-${lightbox.candidate}` : null;
+  const lbImg = lbImgKey ? loadedImages.get(lbImgKey) : undefined;
 
   const started = loading || !!result;
 
@@ -956,6 +962,26 @@ function App() {
                 onPointerCancel={endPan}
               />
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* -------- image lightbox -------- */}
+      {lightbox && lbImg && (
+        <div className="lb-overlay" onClick={() => setLightbox(null)}>
+          <div className="lb-phone" onClick={(e) => e.stopPropagation()}>
+            <div className="lb-phone-header">
+              <span className="lb-label">
+                Round {lightbox.round} · C{lightbox.candidate}
+                {lbRound?.critique.winner === lightbox.candidate && (
+                  <span className="winner-tag"> ★</span>
+                )}
+              </span>
+              {lbStyle && <span className="sel-style">{lbStyle.style}</span>}
+              {lbScore && <span className="sel-score">{lbScore.score.toFixed(1)}</span>}
+              <button className="lb-close" onClick={() => setLightbox(null)}>×</button>
+            </div>
+            <img className="lb-img" src={lbImg.src} alt={`Round ${lightbox.round} Candidate ${lightbox.candidate}`} />
           </div>
         </div>
       )}

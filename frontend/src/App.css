@@ -830,3 +830,81 @@
   gap: 10px;
   flex-shrink: 0;
 }
+
+/* ------------------------------------------------------------------ */
+/*  Image lightbox (mobile phone frame)                                */
+/* ------------------------------------------------------------------ */
+
+.lb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: lb-fade-in 0.18s ease;
+}
+
+@keyframes lb-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.lb-phone {
+  width: min(80vh, 90vw);
+  max-width: 720px;
+  max-height: calc(100vh - 48px);
+  background: #FFFFFF;
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  animation: lb-scale-in 0.2s ease;
+}
+
+@keyframes lb-scale-in {
+  from { transform: scale(0.92); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+.lb-phone-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #E5DFD6;
+  flex-shrink: 0;
+}
+
+.lb-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #2F2A26;
+}
+
+.lb-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid #E5DFD6;
+  background: transparent;
+  color: #6E665E;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lb-close:hover {
+  background: #F3E3DC;
+}
+
+.lb-img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
