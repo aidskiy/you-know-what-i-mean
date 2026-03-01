@@ -12,21 +12,41 @@ def log_session(
     user_prompt: str,
     designer_prompts: list[str],
     image_paths: list[Path],
+    testers: dict | None = None,
+    style_assignments: list[dict] | None = None,
 ) -> None:
-    """Create a W&B run and log all session data (single-round, backward compat)."""
+    """Create a W&B run and log all session data (single-round)."""
     project = os.environ.get("WANDB_PROJECT", "design-self-improve")
+
+    config = {"user_prompt": user_prompt}
+    if testers:
+        config["testers"] = [
+            {"name": t["name"], "vector": t["vector"]}
+            for t in testers.get("testers", [])
+        ]
+    if style_assignments:
+        config["style_assignments"] = style_assignments
 
     run = wandb.init(
         project=project,
         name=f"session-{session_id}",
         group=session_id,
-        config={"user_prompt": user_prompt},
+        config=config,
     )
 
     # --- W&B Table -----------------------------------------------------------
-    table = wandb.Table(columns=["candidate_id", "designer_prompt", "image"])
+    columns = ["candidate_id", "designer_prompt", "image"]
+    if style_assignments:
+        columns.insert(2, "style")
+
+    table = wandb.Table(columns=columns)
     for i, (prompt, img_path) in enumerate(zip(designer_prompts, image_paths)):
-        table.add_data(i + 1, prompt, wandb.Image(str(img_path)))
+        row = [i + 1, prompt]
+        if style_assignments:
+            sa = next((s for s in style_assignments if s["candidate"] == i + 1), {})
+            row.append(sa.get("style", ""))
+        row.append(wandb.Image(str(img_path)))
+        table.add_data(*row)
 
     run.log({"candidates": table})
 
@@ -41,8 +61,9 @@ def log_session(
     )
 
     # prompts/*.txt
+    session_dir = image_paths[0].parent.parent
     for i, prompt in enumerate(designer_prompts):
-        prompt_path = img_path.parent.parent / "prompts" / f"designer_prompt_{i+1}.txt"
+        prompt_path = session_dir / "prompts" / f"designer_prompt_{i+1}.txt"
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
         prompt_path.write_text(prompt, encoding="utf-8")
         artifact.add_file(str(prompt_path), name=f"prompts/designer_prompt_{i+1}.txt")
@@ -51,6 +72,18 @@ def log_session(
     for i, img_path in enumerate(image_paths):
         artifact.add_file(str(img_path), name=f"images/candidate_{i+1}.png")
 
+    # testers.json
+    if testers:
+        testers_path = session_dir / "testers.json"
+        if testers_path.exists():
+            artifact.add_file(str(testers_path), name="testers.json")
+
+    # styles.json
+    if style_assignments:
+        styles_path = session_dir / "styles.json"
+        if styles_path.exists():
+            artifact.add_file(str(styles_path), name="styles.json")
+
     # session_spec.json
     spec = {
         "session_id": session_id,
@@ -58,7 +91,9 @@ def log_session(
         "designer_prompts": designer_prompts,
         "image_files": [str(p) for p in image_paths],
     }
-    spec_path = image_paths[0].parent.parent / "session_spec.json"
+    if style_assignments:
+        spec["style_assignments"] = style_assignments
+    spec_path = session_dir / "session_spec.json"
     spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
     artifact.add_file(str(spec_path), name="session_spec.json")
 
@@ -71,6 +106,7 @@ def log_loop(
     session_id: str,
     user_prompt: str,
     rounds_data: list[dict],
+    testers: dict | None = None,
 ) -> None:
     """Log a multi-round self-improving session to W&B.
 
@@ -78,40 +114,51 @@ def log_loop(
       {
         "round": int,
         "designer_prompts": list[str],
+        "style_assignments": list[dict],  # optional
         "image_paths": list[Path],
-        "critique": dict,       # from critique_candidates()
+        "critique": dict,
       }
     """
     project = os.environ.get("WANDB_PROJECT", "design-self-improve")
+
+    config = {
+        "user_prompt": user_prompt,
+        "total_rounds": len(rounds_data),
+    }
+    if testers:
+        config["testers"] = [
+            {"name": t["name"], "vector": t["vector"]}
+            for t in testers.get("testers", [])
+        ]
 
     run = wandb.init(
         project=project,
         name=f"loop-{session_id}",
         group=session_id,
-        config={
-            "user_prompt": user_prompt,
-            "total_rounds": len(rounds_data),
-        },
+        config=config,
     )
 
     # --- Per-round table with all candidates across rounds -------------------
     table = wandb.Table(columns=[
-        "round", "candidate_id", "designer_prompt", "image", "score", "reasoning",
+        "round", "candidate_id", "style", "designer_prompt", "image", "score", "reasoning",
     ])
 
     for rd in rounds_data:
         round_num = rd["round"]
         critique = rd["critique"]
         scores_by_id = {s["candidate"]: s for s in critique["scores"]}
+        styles = rd.get("style_assignments", [])
 
         for i, (prompt, img_path) in enumerate(
             zip(rd["designer_prompts"], rd["image_paths"]),
         ):
             cid = i + 1
             score_info = scores_by_id.get(cid, {})
+            sa = next((s for s in styles if s.get("candidate") == cid), {})
             table.add_data(
                 round_num,
                 cid,
+                sa.get("style", ""),
                 prompt,
                 wandb.Image(str(img_path)),
                 score_info.get("score", 0),
@@ -139,6 +186,14 @@ def log_loop(
         type="design-loop",
     )
 
+    session_dir = rounds_data[0]["image_paths"][0].parent.parent
+
+    # testers.json (saved by main.py at session root)
+    if testers:
+        testers_path = session_dir / "testers.json"
+        if testers_path.exists():
+            artifact.add_file(str(testers_path), name="testers.json")
+
     for rd in rounds_data:
         round_num = rd["round"]
         round_prefix = f"round_{round_num}"
@@ -158,6 +213,13 @@ def log_loop(
                 name=f"{round_prefix}/images/candidate_{i+1}.png",
             )
 
+        # styles.json per round
+        styles = rd.get("style_assignments", [])
+        if styles:
+            styles_path = rd["image_paths"][0].parent / "styles.json"
+            if styles_path.exists():
+                artifact.add_file(str(styles_path), name=f"{round_prefix}/styles.json")
+
         # critique.json per round
         critique_path = rd["image_paths"][0].parent / "critique.json"
         critique_path.write_text(json.dumps(rd["critique"], indent=2), encoding="utf-8")
@@ -171,7 +233,12 @@ def log_loop(
         "final_winner": rounds_data[-1]["critique"]["winner"],
         "final_scores": rounds_data[-1]["critique"]["scores"],
     }
-    spec_path = rounds_data[0]["image_paths"][0].parent.parent / "session_spec.json"
+    if testers:
+        spec["testers"] = [
+            {"name": t["name"], "vector": t["vector"]}
+            for t in testers.get("testers", [])
+        ]
+    spec_path = session_dir / "session_spec.json"
     spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
     artifact.add_file(str(spec_path), name="session_spec.json")
 
