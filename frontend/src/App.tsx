@@ -46,6 +46,8 @@ type PipelineResult = {
   wandb_url?: string;
 };
 
+type ViewTransform = { scale: number; offsetX: number; offsetY: number };
+
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
@@ -57,6 +59,9 @@ const COL_GAP = 120;
 const HEADER_H = 38;
 const PAD_TOP = 24;
 const PAD_LEFT = 32;
+
+const MIN_ZOOM = 0.6;
+const MAX_ZOOM = 2.5;
 
 const MOCK: PipelineResult = {
   session_id: "demo_1709284000",
@@ -168,41 +173,62 @@ const MOCK: PipelineResult = {
 /*  Canvas drawing                                                     */
 /* ------------------------------------------------------------------ */
 
+/** Compute world-space dimensions of the timeline content. */
+function getWorldSize(rounds: RoundData[]) {
+  const cols = rounds.length;
+  const totalW = PAD_LEFT + cols * (CARD_W + COL_GAP);
+  const totalH = PAD_TOP + HEADER_H + 3 * (CARD_H + CARD_GAP) + 40;
+  return { totalW, totalH };
+}
+
 function drawTimeline(
   canvas: HTMLCanvasElement,
   rounds: RoundData[],
   selectedImg: { round: number; candidate: number } | null,
-  loadedImages: Map<string, HTMLImageElement>
+  loadedImages: Map<string, HTMLImageElement>,
+  view?: ViewTransform,
+  /** If set, use this as screen-space canvas size instead of auto-sizing. */
+  screenSize?: { w: number; h: number },
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  const cols = rounds.length;
-  const totalW = PAD_LEFT + cols * (CARD_W + COL_GAP);
-  const totalH = PAD_TOP + HEADER_H + 3 * (CARD_H + CARD_GAP) + 40;
+  const { totalW, totalH } = getWorldSize(rounds);
+  const scale = view?.scale ?? 1;
+  const ox = view?.offsetX ?? 0;
+  const oy = view?.offsetY ?? 0;
   const dpr = window.devicePixelRatio || 1;
 
-  canvas.width = totalW * dpr;
-  canvas.height = totalH * dpr;
-  canvas.style.width = `${totalW}px`;
-  canvas.style.height = `${totalH}px`;
+  // Determine screen-space canvas dimensions
+  const screenW = screenSize?.w ?? totalW;
+  const screenH = screenSize?.h ?? totalH;
+
+  canvas.width = screenW * dpr;
+  canvas.height = screenH * dpr;
+  canvas.style.width = `${screenW}px`;
+  canvas.style.height = `${screenH}px`;
   ctx.scale(dpr, dpr);
 
-  // background
+  // Screen-space background
   ctx.fillStyle = "#fff0e0";
-  ctx.fillRect(0, 0, totalW, totalH);
+  ctx.fillRect(0, 0, screenW, screenH);
 
-  // subtle dotted grid
-  ctx.fillStyle = "#fff0e0";
-  for (let y = 0; y <= totalH; y += 18) {
-    for (let x = 0; x <= totalW; x += 18) {
+  // Subtle dotted grid in screen space
+  ctx.fillStyle = "#ffe8cc";
+  for (let y = 0; y <= screenH; y += 18) {
+    for (let x = 0; x <= screenW; x += 18) {
       ctx.beginPath();
       ctx.arc(x, y, 1, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  for (let ri = 0; ri < cols; ri++) {
+  // Apply view transform for world-space content
+  ctx.save();
+  ctx.translate(ox, oy);
+  ctx.scale(scale, scale);
+
+  for (let ri = 0; ri < rounds.length; ri++) {
     const rd = rounds[ri];
     const colX = PAD_LEFT + ri * (CARD_W + COL_GAP);
 
@@ -312,7 +338,7 @@ function drawTimeline(
     }
 
     // arrows to next round
-    if (ri < cols - 1) {
+    if (ri < rounds.length - 1) {
       const nextColX = PAD_LEFT + (ri + 1) * (CARD_W + COL_GAP);
       const winnerCid = rd.critique.winner;
       const fromCi = winnerCid - 1;
@@ -355,15 +381,26 @@ function drawTimeline(
       }
     }
   }
+
+  ctx.restore(); // pop view transform
 }
 
 function hitTestCanvas(
   e: React.MouseEvent<HTMLCanvasElement>,
-  rounds: RoundData[]
+  rounds: RoundData[],
+  view?: ViewTransform,
 ): { round: number; candidate: number } | null {
   const rect = e.currentTarget.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const my = e.clientY - rect.top;
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+
+  const scale = view?.scale ?? 1;
+  const ox = view?.offsetX ?? 0;
+  const oy = view?.offsetY ?? 0;
+
+  // Convert screen coords to world coords
+  const mx = (screenX - ox) / scale;
+  const my = (screenY - oy) / scale;
 
   for (let ri = 0; ri < rounds.length; ri++) {
     const rd = rounds[ri];
@@ -403,7 +440,17 @@ function App() {
     Map<string, HTMLImageElement>
   >(new Map());
 
+  // Focus mode state
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [view, setView] = useState<ViewTransform>({ scale: 1, offsetX: 0, offsetY: 0 });
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fsCanvasRef = useRef<HTMLCanvasElement>(null);
+  const fsContainerRef = useRef<HTMLDivElement>(null);
+  const [fsSize, setFsSize] = useState({ w: 0, h: 0 });
+
+  // Pan state (refs to avoid re-renders during drag)
+  const panRef = useRef({ active: false, startX: 0, startY: 0, startOx: 0, startOy: 0 });
 
   /* ---------- fetch pipeline ---------- */
 
@@ -451,7 +498,6 @@ function App() {
       let buffer = "";
       let sessionId = "";
 
-      // Accumulate state incrementally
       let testers: Tester[] = [];
       const roundsMap = new Map<number, RoundData>();
 
@@ -513,7 +559,6 @@ function App() {
                 const rd = ensureRound(data.round);
                 rd.images.push({ candidate: data.candidate, url: data.url });
                 setResult(buildResult());
-                // Eagerly load the image
                 const key = `${data.round}-${data.candidate}`;
                 const el = new Image();
                 el.crossOrigin = "anonymous";
@@ -581,19 +626,143 @@ function App() {
     setLoadedImages(map);
   }, [result, mockMode]);
 
-  /* ---------- redraw canvas ---------- */
+  /* ---------- redraw inline canvas ---------- */
 
   useEffect(() => {
     if (!canvasRef.current || !result) return;
     drawTimeline(canvasRef.current, result.rounds, selectedImg, loadedImages);
   }, [result, selectedImg, loadedImages]);
 
-  /* ---------- canvas click ---------- */
+  /* ---------- fullscreen: measure container ---------- */
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const container = fsContainerRef.current;
+    if (!container) return;
+
+    const measure = () => {
+      setFsSize({ w: container.clientWidth, h: container.clientHeight });
+    };
+    measure();
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [isFullscreen]);
+
+  /* ---------- fullscreen: redraw canvas ---------- */
+
+  useEffect(() => {
+    if (!isFullscreen || !fsCanvasRef.current || !result || fsSize.w === 0) return;
+    drawTimeline(
+      fsCanvasRef.current, result.rounds, selectedImg, loadedImages,
+      view, fsSize,
+    );
+  }, [isFullscreen, result, selectedImg, loadedImages, view, fsSize]);
+
+  /* ---------- fullscreen: escape key ---------- */
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isFullscreen]);
+
+  /* ---------- zoom helpers ---------- */
+
+  const zoomBy = useCallback((delta: number, pivotX?: number, pivotY?: number) => {
+    setView((prev) => {
+      const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.scale + delta));
+      if (pivotX !== undefined && pivotY !== undefined) {
+        // Zoom around the pivot point
+        const worldX = (pivotX - prev.offsetX) / prev.scale;
+        const worldY = (pivotY - prev.offsetY) / prev.scale;
+        return {
+          scale: newScale,
+          offsetX: pivotX - worldX * newScale,
+          offsetY: pivotY - worldY * newScale,
+        };
+      }
+      // Zoom around center of container
+      const cx = fsSize.w / 2;
+      const cy = fsSize.h / 2;
+      const worldX = (cx - prev.offsetX) / prev.scale;
+      const worldY = (cy - prev.offsetY) / prev.scale;
+      return {
+        scale: newScale,
+        offsetX: cx - worldX * newScale,
+        offsetY: cy - worldY * newScale,
+      };
+    });
+  }, [fsSize]);
+
+  const resetView = useCallback(() => {
+    setView({ scale: 1, offsetX: 0, offsetY: 0 });
+  }, []);
+
+  /* ---------- wheel zoom handler ---------- */
+
+  const onWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const delta = e.deltaY > 0 ? -0.1 : 0.1;
+    zoomBy(delta, px, py);
+  }, [zoomBy]);
+
+  /* ---------- pan handlers ---------- */
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
+    panRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      startOx: view.offsetX,
+      startOy: view.offsetY,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [view.offsetX, view.offsetY]);
+
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!panRef.current.active) return;
+    const dx = e.clientX - panRef.current.startX;
+    const dy = e.clientY - panRef.current.startY;
+    setView((prev) => ({
+      ...prev,
+      offsetX: panRef.current.startOx + dx,
+      offsetY: panRef.current.startOy + dy,
+    }));
+  }, []);
+
+  const onPointerUp = useCallback(() => {
+    panRef.current.active = false;
+  }, []);
+
+  /* ---------- canvas click (both modes) ---------- */
 
   const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!result) return;
     const hit = hitTestCanvas(e, result.rounds);
     setSelectedImg(hit);
+  };
+
+  const onFsCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Only fire click if we didn't just pan
+    if (!result) return;
+    const hit = hitTestCanvas(e, result.rounds, view);
+    setSelectedImg(hit);
+  };
+
+  /* ---------- open/close focus mode ---------- */
+
+  const openFocus = () => {
+    setView({ scale: 1, offsetX: 0, offsetY: 0 });
+    setIsFullscreen(true);
   };
 
   /* ---------- derive selection info ---------- */
@@ -667,7 +836,12 @@ function App() {
       {/* -------- canvas timeline -------- */}
       {result && (
         <section className="timeline-section">
-          <h2 className="section-title">Timeline</h2>
+          <div className="section-title-row">
+            <h2 className="section-title">Timeline</h2>
+            <button className="expand-btn" onClick={openFocus}>
+              Expand
+            </button>
+          </div>
           <div className="canvas-wrap">
             <canvas
               ref={canvasRef}
@@ -702,6 +876,49 @@ function App() {
             </div>
           )}
         </section>
+      )}
+
+      {/* -------- fullscreen overlay -------- */}
+      {isFullscreen && result && (
+        <div className="fs-overlay">
+          <div className="fs-header">
+            <span className="fs-title">Timeline</span>
+            <div className="fs-zoom-controls">
+              <button className="fs-zoom-btn" onClick={() => zoomBy(-0.15)}>-</button>
+              <span className="fs-zoom-label">{Math.round(view.scale * 100)}%</span>
+              <button className="fs-zoom-btn" onClick={() => zoomBy(0.15)}>+</button>
+              <button className="fs-zoom-btn fs-reset-btn" onClick={resetView}>Reset</button>
+            </div>
+            <button className="fs-close-btn" onClick={() => setIsFullscreen(false)}>×</button>
+          </div>
+          <div className="fs-canvas-container" ref={fsContainerRef}>
+            <canvas
+              ref={fsCanvasRef}
+              className="fs-canvas"
+              onClick={onFsCanvasClick}
+              onWheel={onWheel}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+            />
+          </div>
+          {/* selection detail in overlay */}
+          {selectedImg && selRound && (
+            <div className="fs-selection-detail">
+              <span className="sel-badge">
+                Round {selectedImg.round} · Candidate {selectedImg.candidate}
+                {selRound.critique.winner === selectedImg.candidate && (
+                  <span className="winner-tag"> ★ Winner</span>
+                )}
+              </span>
+              {selStyle && <span className="sel-style">{selStyle.style}</span>}
+              {selScore && <span className="sel-score">{selScore.score.toFixed(1)}/10</span>}
+              {selPrompt && <p className="sel-prompt">{selPrompt.prompt}</p>}
+              {selScore && <p className="sel-reasoning">{selScore.reasoning}</p>}
+            </div>
+          )}
+        </div>
       )}
 
       {/* -------- audience / testers -------- */}

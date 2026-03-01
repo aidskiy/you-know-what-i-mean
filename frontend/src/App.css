@@ -542,3 +542,151 @@
 .wandb-link a {
   color: #6E665E;
 }
+
+/* ------------------------------------------------------------------ */
+/*  Section title row (title + expand button)                          */
+/* ------------------------------------------------------------------ */
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.section-title-row .section-title {
+  margin: 0;
+}
+
+.expand-btn {
+  padding: 4px 14px;
+  border-radius: 6px;
+  border: 1px solid #E5DFD6;
+  background: transparent;
+  color: #6E665E;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.expand-btn:hover {
+  background: #F1ECE2;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Focus mode (fullscreen overlay)                                    */
+/* ------------------------------------------------------------------ */
+
+.fs-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #FAF6F0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid #E5DFD6;
+  flex-shrink: 0;
+}
+
+.fs-title {
+  font-size: 1rem;
+  font-weight: 800;
+  font-family: "Opaline", "Adelora", system-ui, sans-serif;
+  color: #2F2A26;
+}
+
+.fs-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fs-zoom-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid #E5DFD6;
+  background: #FFFFFF;
+  color: #2F2A26;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+
+.fs-zoom-btn:hover {
+  background: #F1ECE2;
+}
+
+.fs-reset-btn {
+  width: auto;
+  padding: 0 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.fs-zoom-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #6E665E;
+  min-width: 44px;
+  text-align: center;
+}
+
+.fs-close-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid #E5DFD6;
+  background: #FFFFFF;
+  color: #2F2A26;
+  font-size: 1.3rem;
+  font-weight: 400;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+
+.fs-close-btn:hover {
+  background: #F3E3DC;
+}
+
+.fs-canvas-container {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.fs-canvas {
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+.fs-canvas:active {
+  cursor: grabbing;
+}
+
+.fs-selection-detail {
+  padding: 10px 16px;
+  border-top: 1px solid #E5DFD6;
+  background: #FFFFFF;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  flex-shrink: 0;
+}
