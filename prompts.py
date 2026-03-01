@@ -4,6 +4,7 @@ import json
 import os
 
 import httpx
+import weave
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_TEXT_URL = (
@@ -25,6 +26,7 @@ Example output:
 """
 
 
+@weave.op()
 def generate_designer_prompts(user_prompt: str) -> list[str]:
     """Call Gemini text model to produce 3 designer prompts."""
     if not GEMINI_API_KEY:

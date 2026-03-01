@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import httpx
+import weave
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_IMAGE_URL = (
@@ -13,6 +14,7 @@ GEMINI_IMAGE_URL = (
 )
 
 
+@weave.op()
 def generate_image(prompt: str, output_path: str | Path) -> Path:
     """Generate a single PNG image and save it to output_path."""
     if not GEMINI_API_KEY:

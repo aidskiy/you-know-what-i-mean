@@ -1,6 +1,6 @@
 ---
 name: design-gen
-description: Generate 3 UI design images from 3 designer prompt variants and log to W&B
+description: Generate 3 UI design candidates with Weave-traced evaluation and self-improvement via W&B MCP
 user-invocable: true
 compatibility: Python 3.11+
 allowed-tools:
@@ -9,7 +9,7 @@ allowed-tools:
 
 # /design3
 
-Generate 3 distinct designer-style UI images from a single user prompt and log everything to Weights & Biases.
+Generate 3 distinct designer-style UI images from a single user prompt, evaluate them, and iterate using W&B MCP tools.
 
 ## Command
 
@@ -27,10 +27,10 @@ Generate 3 distinct designer-style UI images from a single user prompt and log e
 
 ## What It Does
 
-1. Takes the user prompt and sends it to **Gemini Flash** to produce 3 designer prompts (minimal, editorial, playful styles).
-2. Each designer prompt is sent to **Gemini image generation** to produce a PNG.
-3. Images and prompts are saved locally under `runs/session_<id>/`.
-4. Logs a **W&B Table** (3 rows: candidate_id, designer_prompt, image) and a **W&B Artifact** containing prompts, images, and a `session_spec.json`.
+1. Generates 3 designer prompts (minimal, editorial, playful) via **Gemini Flash**.
+2. Generates 3 PNG images via **Gemini image generation**.
+3. All calls traced to **W&B Weave** via `@weave.op()`.
+4. For the full self-improvement loop, see `CLAUDE.md` — Claude Code orchestrates evaluation, refinement, and reporting via W&B MCP tools.
 
 ## Entrypoint
 
