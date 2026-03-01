@@ -46,7 +46,11 @@ type PipelineResult = {
   wandb_url?: string;
 };
 
-type ViewTransform = { scale: number; offsetX: number; offsetY: number };
+type ViewTransform = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+};
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -186,49 +190,44 @@ function drawTimeline(
   rounds: RoundData[],
   selectedImg: { round: number; candidate: number } | null,
   loadedImages: Map<string, HTMLImageElement>,
-  view?: ViewTransform,
-  /** If set, use this as screen-space canvas size instead of auto-sizing. */
-  screenSize?: { w: number; h: number },
+  view: ViewTransform,
+  viewport: { width: number; height: number }
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  const { totalW, totalH } = getWorldSize(rounds);
-  const scale = view?.scale ?? 1;
-  const ox = view?.offsetX ?? 0;
-  const oy = view?.offsetY ?? 0;
+  const cols = rounds.length;
   const dpr = window.devicePixelRatio || 1;
 
-  // Determine screen-space canvas dimensions
-  const screenW = screenSize?.w ?? totalW;
-  const screenH = screenSize?.h ?? totalH;
+  const vw = Math.max(1, Math.floor(viewport.width));
+  const vh = Math.max(1, Math.floor(viewport.height));
 
-  canvas.width = screenW * dpr;
-  canvas.height = screenH * dpr;
-  canvas.style.width = `${screenW}px`;
-  canvas.style.height = `${screenH}px`;
-  ctx.scale(dpr, dpr);
+  canvas.width = vw * dpr;
+  canvas.height = vh * dpr;
+  canvas.style.width = `${vw}px`;
+  canvas.style.height = `${vh}px`;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   // Screen-space background
   ctx.fillStyle = "#fff0e0";
-  ctx.fillRect(0, 0, screenW, screenH);
+  ctx.fillRect(0, 0, vw, vh);
 
-  // Subtle dotted grid in screen space
-  ctx.fillStyle = "#ffe8cc";
-  for (let y = 0; y <= screenH; y += 18) {
-    for (let x = 0; x <= screenW; x += 18) {
+  // subtle dotted grid
+  ctx.fillStyle = "rgba(47, 42, 38, 0.06)";
+  for (let y = 0; y <= vh; y += 18) {
+    for (let x = 0; x <= vw; x += 18) {
       ctx.beginPath();
       ctx.arc(x, y, 1, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  // Apply view transform for world-space content
   ctx.save();
-  ctx.translate(ox, oy);
-  ctx.scale(scale, scale);
+  ctx.translate(view.offsetX, view.offsetY);
+  ctx.scale(view.scale, view.scale);
 
-  for (let ri = 0; ri < rounds.length; ri++) {
+  for (let ri = 0; ri < cols; ri++) {
     const rd = rounds[ri];
     const colX = PAD_LEFT + ri * (CARD_W + COL_GAP);
 
@@ -382,25 +381,20 @@ function drawTimeline(
     }
   }
 
-  ctx.restore(); // pop view transform
+  ctx.restore();
 }
 
 function hitTestCanvas(
   e: React.MouseEvent<HTMLCanvasElement>,
   rounds: RoundData[],
-  view?: ViewTransform,
+  view: ViewTransform
 ): { round: number; candidate: number } | null {
   const rect = e.currentTarget.getBoundingClientRect();
-  const screenX = e.clientX - rect.left;
-  const screenY = e.clientY - rect.top;
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
 
-  const scale = view?.scale ?? 1;
-  const ox = view?.offsetX ?? 0;
-  const oy = view?.offsetY ?? 0;
-
-  // Convert screen coords to world coords
-  const mx = (screenX - ox) / scale;
-  const my = (screenY - oy) / scale;
+  const worldX = (mx - view.offsetX) / view.scale;
+  const worldY = (my - view.offsetY) / view.scale;
 
   for (let ri = 0; ri < rounds.length; ri++) {
     const rd = rounds[ri];
@@ -408,7 +402,12 @@ function hitTestCanvas(
     for (let ci = 0; ci < 3; ci++) {
       const x = colX;
       const y = PAD_TOP + HEADER_H + ci * (CARD_H + CARD_GAP);
-      if (mx >= x && mx <= x + CARD_W && my >= y && my <= y + CARD_H) {
+      if (
+        worldX >= x &&
+        worldX <= x + CARD_W &&
+        worldY >= y &&
+        worldY <= y + CARD_H
+      ) {
         return { round: rd.round, candidate: ci + 1 };
       }
     }
@@ -440,17 +439,27 @@ function App() {
     Map<string, HTMLImageElement>
   >(new Map());
 
-  // Focus mode state
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [view, setView] = useState<ViewTransform>({ scale: 1, offsetX: 0, offsetY: 0 });
+  const [view, setView] = useState<ViewTransform>({
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+  });
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartRef = useRef<{
+    x: number;
+    y: number;
+    offsetX: number;
+    offsetY: number;
+    pointerId: number;
+  } | null>(null);
+  const [fsViewport, setFsViewport] = useState<{ width: number; height: number }>(
+    { width: 1, height: 1 }
+  );
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fsCanvasRef = useRef<HTMLCanvasElement>(null);
-  const fsContainerRef = useRef<HTMLDivElement>(null);
-  const [fsSize, setFsSize] = useState({ w: 0, h: 0 });
-
-  // Pan state (refs to avoid re-renders during drag)
-  const panRef = useRef({ active: false, startX: 0, startY: 0, startOx: 0, startOy: 0 });
+  const fsCanvasWrapRef = useRef<HTMLDivElement>(null);
 
   /* ---------- fetch pipeline ---------- */
 
@@ -629,141 +638,156 @@ function App() {
   /* ---------- redraw inline canvas ---------- */
 
   useEffect(() => {
-    if (!canvasRef.current || !result) return;
-    drawTimeline(canvasRef.current, result.rounds, selectedImg, loadedImages);
-  }, [result, selectedImg, loadedImages]);
+    if (!result) return;
 
-  /* ---------- fullscreen: measure container ---------- */
+    const cols = result.rounds.length;
+    const worldW = PAD_LEFT + cols * (CARD_W + COL_GAP);
+    const worldH = PAD_TOP + HEADER_H + 3 * (CARD_H + CARD_GAP) + 40;
 
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const container = fsContainerRef.current;
-    if (!container) return;
+    if (canvasRef.current && !isFullscreen) {
+      drawTimeline(
+        canvasRef.current,
+        result.rounds,
+        selectedImg,
+        loadedImages,
+        view,
+        { width: worldW, height: worldH }
+      );
+    }
 
-    const measure = () => {
-      setFsSize({ w: container.clientWidth, h: container.clientHeight });
-    };
-    measure();
+    if (fsCanvasRef.current && isFullscreen) {
+      drawTimeline(
+        fsCanvasRef.current,
+        result.rounds,
+        selectedImg,
+        loadedImages,
+        view,
+        fsViewport
+      );
+    }
+  }, [result, selectedImg, loadedImages, view, isFullscreen, fsViewport]);
 
-    const ro = new ResizeObserver(measure);
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, [isFullscreen]);
-
-  /* ---------- fullscreen: redraw canvas ---------- */
-
-  useEffect(() => {
-    if (!isFullscreen || !fsCanvasRef.current || !result || fsSize.w === 0) return;
-    drawTimeline(
-      fsCanvasRef.current, result.rounds, selectedImg, loadedImages,
-      view, fsSize,
-    );
-  }, [isFullscreen, result, selectedImg, loadedImages, view, fsSize]);
-
-  /* ---------- fullscreen: escape key ---------- */
+  /* ---------- fullscreen canvas sizing ---------- */
 
   useEffect(() => {
     if (!isFullscreen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setIsFullscreen(false);
+    const el = fsCanvasWrapRef.current;
+    if (!el) return;
+
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      setFsViewport({ width: r.width, height: r.height });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+
+    update();
+    const ro = new ResizeObserver(() => update());
+    ro.observe(el);
+    window.addEventListener("resize", update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", update);
+    };
   }, [isFullscreen]);
 
-  /* ---------- zoom helpers ---------- */
-
-  const zoomBy = useCallback((delta: number, pivotX?: number, pivotY?: number) => {
-    setView((prev) => {
-      const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.scale + delta));
-      if (pivotX !== undefined && pivotY !== undefined) {
-        // Zoom around the pivot point
-        const worldX = (pivotX - prev.offsetX) / prev.scale;
-        const worldY = (pivotY - prev.offsetY) / prev.scale;
-        return {
-          scale: newScale,
-          offsetX: pivotX - worldX * newScale,
-          offsetY: pivotY - worldY * newScale,
-        };
-      }
-      // Zoom around center of container
-      const cx = fsSize.w / 2;
-      const cy = fsSize.h / 2;
-      const worldX = (cx - prev.offsetX) / prev.scale;
-      const worldY = (cy - prev.offsetY) / prev.scale;
-      return {
-        scale: newScale,
-        offsetX: cx - worldX * newScale,
-        offsetY: cy - worldY * newScale,
-      };
-    });
-  }, [fsSize]);
-
-  const resetView = useCallback(() => {
-    setView({ scale: 1, offsetX: 0, offsetY: 0 });
-  }, []);
-
-  /* ---------- wheel zoom handler ---------- */
-
-  const onWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const rect = e.currentTarget.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
-    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    zoomBy(delta, px, py);
-  }, [zoomBy]);
-
-  /* ---------- pan handlers ---------- */
-
-  const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.button !== 0) return;
-    panRef.current = {
-      active: true,
-      startX: e.clientX,
-      startY: e.clientY,
-      startOx: view.offsetX,
-      startOy: view.offsetY,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  }, [view.offsetX, view.offsetY]);
-
-  const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!panRef.current.active) return;
-    const dx = e.clientX - panRef.current.startX;
-    const dy = e.clientY - panRef.current.startY;
-    setView((prev) => ({
-      ...prev,
-      offsetX: panRef.current.startOx + dx,
-      offsetY: panRef.current.startOy + dy,
-    }));
-  }, []);
-
-  const onPointerUp = useCallback(() => {
-    panRef.current.active = false;
-  }, []);
-
-  /* ---------- canvas click (both modes) ---------- */
+  /* ---------- canvas click ---------- */
 
   const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!result) return;
-    const hit = hitTestCanvas(e, result.rounds);
-    setSelectedImg(hit);
-  };
-
-  const onFsCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Only fire click if we didn't just pan
     if (!result) return;
     const hit = hitTestCanvas(e, result.rounds, view);
     setSelectedImg(hit);
   };
 
-  /* ---------- open/close focus mode ---------- */
+  /* ---------- zoom / pan handlers ---------- */
 
-  const openFocus = () => {
-    setView({ scale: 1, offsetX: 0, offsetY: 0 });
-    setIsFullscreen(true);
+  const clampScale = (s: number) => Math.min(2.5, Math.max(0.6, s));
+
+  const zoomTo = (
+    nextScale: number,
+    anchor: { x: number; y: number } | null,
+    target: HTMLCanvasElement
+  ) => {
+    const rect = target.getBoundingClientRect();
+    const mx = (anchor?.x ?? rect.width / 2) - rect.left;
+    const my = (anchor?.y ?? rect.height / 2) - rect.top;
+
+    setView((prev) => {
+      const newScale = clampScale(nextScale);
+      const worldX = (mx - prev.offsetX) / prev.scale;
+      const worldY = (my - prev.offsetY) / prev.scale;
+      const offsetX = mx - worldX * newScale;
+      const offsetY = my - worldY * newScale;
+      return { scale: newScale, offsetX, offsetY };
+    });
   };
+
+  const onCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    const wantsZoom = isFullscreen || e.ctrlKey || e.metaKey;
+    if (!wantsZoom) return;
+    e.preventDefault();
+
+    const zoomIntensity = 0.0015;
+    const delta = -e.deltaY * zoomIntensity;
+    const factor = Math.exp(delta);
+    const target = e.currentTarget;
+    zoomTo(view.scale * factor, { x: e.clientX, y: e.clientY }, target);
+  };
+
+  const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (view.scale === 1) return;
+    if (e.button !== 0) return;
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
+    panStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      offsetX: view.offsetX,
+      offsetY: view.offsetY,
+      pointerId: e.pointerId,
+    };
+    setIsPanning(true);
+  };
+
+  const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const start = panStartRef.current;
+    if (!start) return;
+    if (start.pointerId !== e.pointerId) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    setView((prev) => ({
+      ...prev,
+      offsetX: start.offsetX + dx,
+      offsetY: start.offsetY + dy,
+    }));
+  };
+
+  const endPan = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const start = panStartRef.current;
+    if (!start) return;
+    if (start.pointerId !== e.pointerId) return;
+    panStartRef.current = null;
+    setIsPanning(false);
+  };
+
+  const zoomIn = (target: HTMLCanvasElement | null) => {
+    if (!target) return;
+    zoomTo(view.scale * 1.15, null, target);
+  };
+
+  const zoomOut = (target: HTMLCanvasElement | null) => {
+    if (!target) return;
+    zoomTo(view.scale / 1.15, null, target);
+  };
+
+  const resetView = () => setView({ scale: 1, offsetX: 0, offsetY: 0 });
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setIsFullscreen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isFullscreen]);
 
   /* ---------- derive selection info ---------- */
 
@@ -836,17 +860,27 @@ function App() {
       {/* -------- canvas timeline -------- */}
       {result && (
         <section className="timeline-section">
-          <div className="section-title-row">
+          <div className="timeline-title-row">
             <h2 className="section-title">Timeline</h2>
-            <button className="expand-btn" onClick={openFocus}>
+            <button
+              className="timeline-expand"
+              onClick={() => setIsFullscreen(true)}
+              type="button"
+            >
               Expand
             </button>
           </div>
           <div className="canvas-wrap">
             <canvas
               ref={canvasRef}
-              className="timeline-canvas"
+              className={`timeline-canvas ${view.scale !== 1 ? "is-grabbable" : ""
+                } ${isPanning ? "is-grabbing" : ""}`}
               onClick={onCanvasClick}
+              onWheel={onCanvasWheel}
+              onPointerDown={onCanvasPointerDown}
+              onPointerMove={onCanvasPointerMove}
+              onPointerUp={endPan}
+              onPointerCancel={endPan}
             />
           </div>
 
@@ -859,17 +893,11 @@ function App() {
                   <span className="winner-tag"> ★ Winner</span>
                 )}
               </span>
-              {selStyle && (
-                <span className="sel-style">{selStyle.style}</span>
-              )}
+              {selStyle && <span className="sel-style">{selStyle.style}</span>}
               {selScore && (
-                <span className="sel-score">
-                  {selScore.score.toFixed(1)}/10
-                </span>
+                <span className="sel-score">{selScore.score.toFixed(1)}/10</span>
               )}
-              {selPrompt && (
-                <p className="sel-prompt">{selPrompt.prompt}</p>
-              )}
+              {selPrompt && <p className="sel-prompt">{selPrompt.prompt}</p>}
               {selScore && (
                 <p className="sel-reasoning">{selScore.reasoning}</p>
               )}
@@ -878,46 +906,57 @@ function App() {
         </section>
       )}
 
-      {/* -------- fullscreen overlay -------- */}
-      {isFullscreen && result && (
-        <div className="fs-overlay">
-          <div className="fs-header">
-            <span className="fs-title">Timeline</span>
-            <div className="fs-zoom-controls">
-              <button className="fs-zoom-btn" onClick={() => zoomBy(-0.15)}>-</button>
-              <span className="fs-zoom-label">{Math.round(view.scale * 100)}%</span>
-              <button className="fs-zoom-btn" onClick={() => zoomBy(0.15)}>+</button>
-              <button className="fs-zoom-btn fs-reset-btn" onClick={resetView}>Reset</button>
+      {result && isFullscreen && (
+        <div className="timeline-overlay" role="dialog" aria-modal="true">
+          <div className="timeline-overlay-inner">
+            <div className="timeline-overlay-header">
+              <div className="timeline-overlay-title">Timeline</div>
+              <div className="timeline-overlay-controls">
+                <button
+                  type="button"
+                  className="zoom-btn"
+                  onClick={() => zoomOut(fsCanvasRef.current)}
+                >
+                  -
+                </button>
+                <button
+                  type="button"
+                  className="zoom-btn"
+                  onClick={() => zoomIn(fsCanvasRef.current)}
+                >
+                  +
+                </button>
+                <button type="button" className="zoom-reset" onClick={resetView}>
+                  Reset
+                </button>
+                <div className="zoom-readout">
+                  {Math.round(view.scale * 100)}%
+                </div>
+              </div>
+              <button
+                className="timeline-overlay-close"
+                onClick={() => setIsFullscreen(false)}
+                type="button"
+                aria-label="Close"
+              >
+                ×
+              </button>
             </div>
-            <button className="fs-close-btn" onClick={() => setIsFullscreen(false)}>×</button>
-          </div>
-          <div className="fs-canvas-container" ref={fsContainerRef}>
-            <canvas
-              ref={fsCanvasRef}
-              className="fs-canvas"
-              onClick={onFsCanvasClick}
-              onWheel={onWheel}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerCancel={onPointerUp}
-            />
-          </div>
-          {/* selection detail in overlay */}
-          {selectedImg && selRound && (
-            <div className="fs-selection-detail">
-              <span className="sel-badge">
-                Round {selectedImg.round} · Candidate {selectedImg.candidate}
-                {selRound.critique.winner === selectedImg.candidate && (
-                  <span className="winner-tag"> ★ Winner</span>
-                )}
-              </span>
-              {selStyle && <span className="sel-style">{selStyle.style}</span>}
-              {selScore && <span className="sel-score">{selScore.score.toFixed(1)}/10</span>}
-              {selPrompt && <p className="sel-prompt">{selPrompt.prompt}</p>}
-              {selScore && <p className="sel-reasoning">{selScore.reasoning}</p>}
+
+            <div className="timeline-overlay-canvas" ref={fsCanvasWrapRef}>
+              <canvas
+                ref={fsCanvasRef}
+                className={`timeline-canvas timeline-canvas--fullscreen ${view.scale !== 1 ? "is-grabbable" : ""
+                  } ${isPanning ? "is-grabbing" : ""}`}
+                onClick={onCanvasClick}
+                onWheel={onCanvasWheel}
+                onPointerDown={onCanvasPointerDown}
+                onPointerMove={onCanvasPointerMove}
+                onPointerUp={endPan}
+                onPointerCancel={endPan}
+              />
             </div>
-          )}
+          </div>
         </div>
       )}
 

@@ -14,7 +14,7 @@ from flask_cors import CORS
 
 from audience import generate_testers
 from prompts import generate_designer_prompts_v2
-from gemini_image import generate_image
+from fal_image import generate_image
 from critique import critique_candidates
 from refine import refine_prompts_v2
 
