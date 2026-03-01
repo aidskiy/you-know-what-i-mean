@@ -189,16 +189,26 @@ function drawTimeline(
   ctx.scale(dpr, dpr);
 
   // background
-  ctx.fillStyle = "#18181b";
+  ctx.fillStyle = "#fff0e0";
   ctx.fillRect(0, 0, totalW, totalH);
+
+  // subtle dotted grid
+  ctx.fillStyle = "#fff0e0";
+  for (let y = 0; y <= totalH; y += 18) {
+    for (let x = 0; x <= totalW; x += 18) {
+      ctx.beginPath();
+      ctx.arc(x, y, 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 
   for (let ri = 0; ri < cols; ri++) {
     const rd = rounds[ri];
     const colX = PAD_LEFT + ri * (CARD_W + COL_GAP);
 
     // round header
-    ctx.fillStyle = "#a1a1aa";
-    ctx.font = "bold 13px system-ui, sans-serif";
+    ctx.fillStyle = "#2F2A26";
+    ctx.font = "800 20px Opaline, Adelora, system-ui, sans-serif";
     ctx.fillText(`Round ${rd.round}`, colX, PAD_TOP + 12);
 
     for (let ci = 0; ci < 3; ci++) {
@@ -211,10 +221,27 @@ function drawTimeline(
         selectedImg?.round === rd.round && selectedImg?.candidate === cid;
 
       // card bg
-      ctx.fillStyle = isSelected ? "#3b3b44" : "#27272a";
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.05)";
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 3;
+      ctx.fillStyle = "#FFFFFF";
       ctx.beginPath();
       ctx.roundRect(x, y, CARD_W, CARD_H, 8);
       ctx.fill();
+
+      // card border
+      ctx.shadowColor = "rgba(0,0,0,0)";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      ctx.strokeStyle = "#E5DFD6";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(x, y, CARD_W, CARD_H, 8);
+      ctx.stroke();
+      ctx.restore();
 
       // try to draw loaded image
       const imgKey = `${rd.round}-${cid}`;
@@ -228,12 +255,12 @@ function drawTimeline(
         ctx.restore();
       } else {
         // placeholder
-        ctx.fillStyle = "#3f3f46";
+        ctx.fillStyle = "#F1ECE2";
         ctx.beginPath();
         ctx.roundRect(x + 2, y + 2, CARD_W - 4, CARD_H - 4, 6);
         ctx.fill();
-        ctx.fillStyle = "#71717a";
-        ctx.font = "11px system-ui, sans-serif";
+        ctx.fillStyle = "#6E665E";
+        ctx.font = "600 17px Opaline, Adelora, system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(`C${cid}`, x + CARD_W / 2, y + CARD_H / 2 + 4);
         ctx.textAlign = "left";
@@ -241,7 +268,7 @@ function drawTimeline(
 
       // winner ring
       if (isWinner) {
-        ctx.strokeStyle = "#22c55e";
+        ctx.strokeStyle = "#FA7070";
         ctx.lineWidth = 2.5;
         ctx.beginPath();
         ctx.roundRect(x - 1, y - 1, CARD_W + 2, CARD_H + 2, 9);
@@ -250,7 +277,7 @@ function drawTimeline(
 
       // selection ring
       if (isSelected) {
-        ctx.strokeStyle = "#818cf8";
+        ctx.strokeStyle = "#B8B2A8";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.roundRect(x - 3, y - 3, CARD_W + 6, CARD_H + 6, 11);
@@ -262,12 +289,12 @@ function drawTimeline(
       if (score) {
         const badgeX = x + CARD_W - 6;
         const badgeY = y + 6;
-        ctx.fillStyle = isWinner ? "#166534" : "#3f3f46";
+        ctx.fillStyle = isWinner ? "#FA7070" : "#E5DFD6";
         ctx.beginPath();
         ctx.arc(badgeX, badgeY, 14, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = "#fff";
-        ctx.font = "bold 10px system-ui, sans-serif";
+        ctx.fillStyle = "#2F2A26";
+        ctx.font = "800 15px Opaline, Adelora, system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(score.score.toFixed(1), badgeX, badgeY + 3.5);
         ctx.textAlign = "left";
@@ -276,8 +303,8 @@ function drawTimeline(
       // style label
       const sa = rd.style_assignments.find((s) => s.candidate === cid);
       if (sa) {
-        ctx.fillStyle = "#a1a1aa";
-        ctx.font = "9px system-ui, sans-serif";
+        ctx.fillStyle = "#6E665E";
+        ctx.font = "600 14px Opaline, Adelora, system-ui, sans-serif";
         const label =
           sa.style.length > 16 ? sa.style.slice(0, 15) + "…" : sa.style;
         ctx.fillText(label, x + 4, y + CARD_H - 5);
@@ -298,7 +325,7 @@ function drawTimeline(
         const toY =
           PAD_TOP + HEADER_H + ci * (CARD_H + CARD_GAP) + CARD_H / 2;
 
-        ctx.strokeStyle = ci === fromCi ? "#22c55e88" : "#52525b44";
+        ctx.strokeStyle = ci === fromCi ? "#FA7070" : "#CFC8BE";
         ctx.lineWidth = ci === fromCi ? 2 : 1;
         ctx.beginPath();
         ctx.moveTo(fromX, fromY);
@@ -311,7 +338,7 @@ function drawTimeline(
         if (ci === fromCi) {
           const angle = Math.atan2(toY - fromY, toX - fromX);
           const headLen = 7;
-          ctx.fillStyle = "#22c55e88";
+          ctx.fillStyle = "#FA7070";
           ctx.beginPath();
           ctx.moveTo(toX, toY);
           ctx.lineTo(
@@ -359,6 +386,7 @@ function hitTestCanvas(
 function App() {
   const [prompt, setPrompt] = useState("A meditation app for busy professionals");
   const [rounds, setRounds] = useState(3);
+  const [mockMode, setMockMode] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PipelineResult | null>(null);
@@ -380,6 +408,18 @@ function App() {
 
   const runPipeline = useCallback(async () => {
     if (!prompt.trim()) return;
+
+    if (mockMode) {
+      setLoading(false);
+      setError(null);
+      setResult(MOCK);
+      setSelectedImg(null);
+      setReportOpen(false);
+      setExpandedReviews(new Set());
+      setLoadedImages(new Map());
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setResult(null);
@@ -421,7 +461,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [prompt, rounds]);
+  }, [prompt, rounds, mockMode]);
 
   /* ---------- load images when result arrives ---------- */
 
@@ -470,10 +510,12 @@ function App() {
     (s) => s.candidate === selectedImg?.candidate
   );
 
+  const started = loading || !!result;
+
   /* ---------- render ---------- */
 
   return (
-    <div className="app">
+    <div className={`app ${started ? "is-running" : "is-landing"}`}>
       {/* -------- header / input -------- */}
       <header className="header">
         <h1 className="title">Design Pipeline</h1>
@@ -497,12 +539,20 @@ function App() {
                 onChange={(e) => setRounds(Number(e.target.value) || 1)}
               />
             </label>
+            <label className="rounds-label">
+              <input
+                type="checkbox"
+                checked={mockMode}
+                onChange={(e) => setMockMode(e.target.checked)}
+              />
+              Mock mode
+            </label>
             <button
               className="run-btn"
               onClick={runPipeline}
               disabled={loading || !prompt.trim()}
             >
-              {loading ? "Running…" : "Run"}
+              {loading ? "Running…" : mockMode ? "Run (Mock)" : "Run"}
             </button>
           </div>
         </div>
