@@ -1,62 +1,99 @@
-# You Know What I Mean
+# Design ~ Storm
 
-Minimal pipeline: **user prompt → 3 designer-style prompts → 3 images (Gemini) → Weights & Biases**.
+An AI design tool that autonomously adapts designs to your target users. Describe your product, and Design Storm generates multiple UI concepts, critiques them through AI-generated user personas, and iteratively refines the designs — all tracked with Weights & Biases.
 
-## Install
+Built by **binbin** and **Aida**.
+
+![Design Storm Screenshot](frontend/public/screenshot.png)
+
+## How It Works
+
+1. **Audience generation** — AI creates 3 realistic tester personas with 6-dimensional audience vectors (economic role, price tolerance, emotional driver, tech sophistication, time abundance, risk tolerance).
+2. **Design prompts** — A design director agent selects 3 styles from a 10-style taxonomy and writes detailed image-generation prompts tailored to each persona.
+3. **Image generation** — Each prompt produces a high-fidelity UI mockup via fal.ai.
+4. **Critique** — Each persona reviews all 3 candidates with scores and reasoning, then a winner is selected.
+5. **Refinement** — The critique feeds back into prompt generation for the next round, keeping what worked and addressing what didn't.
+6. **Repeat** — The loop runs for N rounds (configurable), with each iteration improving on the last.
+
+All calls are traced with [Weave](https://wandb.me/weave) for full observability.
+
+## Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Text / critique | [Mistral AI](https://mistral.ai) (pixtral-large) via OpenAI-compatible API |
+| Image generation | [fal.ai](https://fal.ai) (nano-banana-2) |
+| Observability | [Weights & Biases](https://wandb.ai) + Weave |
+| Backend | Flask (Python) with SSE streaming |
+| Frontend | React + TypeScript + Vite |
+
+## Quick Start
 
 ```bash
-pip install -r requirements.txt
+# 1. Clone and install
+git clone <repo-url> && cd you-know-what-i-mean
+make install
+
+# 2. Set up environment variables
+cp .env.example .env
+# Edit .env with your keys
+
+# 3. Run both backend and frontend
+make dev
 ```
+
+The frontend opens at `http://localhost:5173` and the API runs on `http://localhost:5001`.
 
 ## Environment Variables
 
 | Variable | Required | Description |
-|---|---|---|
-| `GEMINI_API_KEY` | **yes** | Google AI Studio / Gemini API key |
+|----------|----------|-------------|
+| `MISTRAL_API_KEY` | **yes** | Mistral AI API key (text generation + critique) |
+| `FAL_KEY` | **yes** | fal.ai API key (image generation) |
 | `WANDB_API_KEY` | **yes** | Weights & Biases API key |
 | `WANDB_PROJECT` | no | W&B project name (default: `design-self-improve`) |
 
 ## Usage
 
+### Web UI (recommended)
+
+Run `make dev`, open the frontend, type a product description (e.g. *"A meditation app for busy professionals"*), set the number of rounds, and hit Run. Results stream in live — personas, prompts, images, and scores appear as they're generated.
+
+Click any image in the timeline to expand it. Use the **Expand** button for a full-screen zoomable canvas view.
+
+### CLI
+
 ```bash
-python main.py "Design a clean nutrition app card with one box and back button"
+make run PROMPT="A meditation app for busy professionals" ROUNDS=3
 ```
 
-### What happens
-
-1. Gemini generates **3 distinct designer prompts** (minimal, editorial, playful).
-2. Each prompt is sent to **Gemini image generation** to produce a PNG.
-3. Images and prompts are saved locally under `runs/session_<id>/`.
-4. Everything is logged to **W&B**: images, a comparison table, and an artifact bundle.
-
-## Mistral Vibe Skill
-
-This project includes a **Vibe skill** at `.vibe/skills/design-gen/`. Vibe automatically discovers project skills in that directory.
-
-### Setup
-
-1. Open this repo in Vibe.
-2. Make sure `GEMINI_API_KEY` and `WANDB_API_KEY` are set in your environment.
-
-### Run via slash command
+## Project Structure
 
 ```
-/design3 "Design a clean nutrition app card with one box and back button"
+server.py              Flask API server (SSE streaming)
+audience.py            Generate 3 tester personas with audience vectors
+prompts.py             Select styles + write designer prompts
+fal_image.py           Image generation via fal.ai
+critique.py            Multimodal persona-based critique
+refine.py              Improve prompts from critique feedback
+scorers.py             Weave-compatible composite scorer
+gemini_client.py       Shared Mistral AI client (OpenAI-compatible)
+frontend/              React + TypeScript + Vite app
 ```
 
-The skill is marked `user-invocable: true`, so it appears as a slash command in Vibe. It runs the same pipeline as `main.py` — 3 designer prompts, 3 images, W&B logging.
+## Output
 
-## Output Structure
+Each run saves artifacts under `runs/session_<id>/`:
 
 ```
 runs/session_<id>/
-├── images/
-│   ├── candidate_1.png
-│   ├── candidate_2.png
-│   └── candidate_3.png
-├── prompts/
-│   ├── designer_prompt_1.txt
-│   ├── designer_prompt_2.txt
-│   └── designer_prompt_3.txt
-└── session_spec.json
+  testers.json                    # Generated personas
+  round_1/
+    styles.json                   # Style assignments
+    images/
+      candidate_1.png
+      candidate_2.png
+      candidate_3.png
+  round_2/
+    ...
 ```
