@@ -82,6 +82,12 @@ frontend/              React + TypeScript + Vite app
 ```
 
 ## Output
+images/<img width="609" height="459" alt="Screenshot 2026-03-01 at 5 49 46 PM" src="https://github.com/user-attachments/assets/ba58909f-8db7-48bf-a03c-1ec5cd085d4c" />
+<img width="159" height="409" alt="Screenshot 2026-03-01 at 5 51 02 PM" src="https://github.com/user-attachments/assets/99e35b47-793d-4f2c-b535-7d799476a721" />
+<img width="880" height="442" alt="Screenshot 2026-03-01 at 6 09 54 PM" src="https://github.com/user-attachments/assets/c6631857-b738-4121-b772-2260384ee411" />
+<img width="864" height="747" alt="Screenshot 2026-03-01 at 6 11 18 PM" src="https://github.com/user-attachments/assets/f840e14d-3842-4a7e-87e4-31f04a7b786d" />
+
+
 
 Each run saves artifacts under `runs/session_<id>/`:
 
@@ -90,7 +96,7 @@ runs/session_<id>/
   testers.json                    # Generated personas
   round_1/
     styles.json                   # Style assignments
-    images/
+
       candidate_1.png
       candidate_2.png
       candidate_3.png
