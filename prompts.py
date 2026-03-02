@@ -5,7 +5,6 @@ import json
 import weave
 
 from gemini_client import get_client, TEXT_MODEL
-from mistral_client import get_client, TEXT_MODEL
 
 DESIGN_STYLES = [
     "Minimalist/Flat",
@@ -126,7 +125,7 @@ def generate_designer_prompts_v2(user_prompt: str, testers: dict) -> dict:
     )
 
     client = get_client()
-    resp = client.chat.complete(
+    resp = client.chat.completions.create(
         model=TEXT_MODEL,
         temperature=0.9,
         max_tokens=8000,
